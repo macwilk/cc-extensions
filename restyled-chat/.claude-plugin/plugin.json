@@ -1,0 +1,8 @@
+{
+  "name": "restyled-chat",
+  "version": "0.1.0",
+  "description": "Color themes and full-width code blocks for the Claude Code terminal",
+  "author": {
+    "name": "macwilk"
+  }
+}

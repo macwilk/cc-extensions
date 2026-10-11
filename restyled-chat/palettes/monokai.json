@@ -1,0 +1,19 @@
+{
+  "name": "Monokai",
+  "base": "dark",
+  "colors": {
+    "bg": "#272822",
+    "fg": "#f8f8f2",
+    "muted": "#88846f",
+    "accent": "#ae81ff",
+    "info": "#66d9ef",
+    "red": "#f92672",
+    "green": "#a6e22e",
+    "yellow": "#e6db74",
+    "orange": "#fd971f",
+    "blue": "#66d9ef",
+    "purple": "#ae81ff",
+    "pink": "#f92672",
+    "cyan": "#66d9ef"
+  }
+}

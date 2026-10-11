@@ -1,0 +1,19 @@
+{
+  "name": "Solarized Dark",
+  "base": "dark",
+  "colors": {
+    "bg": "#002b36",
+    "fg": "#839496",
+    "muted": "#586e75",
+    "accent": "#268bd2",
+    "info": "#6c71c4",
+    "red": "#dc322f",
+    "green": "#859900",
+    "yellow": "#b58900",
+    "orange": "#cb4b16",
+    "blue": "#268bd2",
+    "purple": "#6c71c4",
+    "pink": "#d33682",
+    "cyan": "#2aa198"
+  }
+}

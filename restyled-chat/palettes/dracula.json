@@ -1,0 +1,19 @@
+{
+  "name": "Dracula",
+  "base": "dark",
+  "colors": {
+    "bg": "#282a36",
+    "fg": "#f8f8f2",
+    "muted": "#6272a4",
+    "accent": "#bd93f9",
+    "info": "#8be9fd",
+    "red": "#ff5555",
+    "green": "#50fa7b",
+    "yellow": "#f1fa8c",
+    "orange": "#ffb86c",
+    "blue": "#8be9fd",
+    "purple": "#bd93f9",
+    "pink": "#ff79c6",
+    "cyan": "#8be9fd"
+  }
+}

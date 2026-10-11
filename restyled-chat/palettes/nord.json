@@ -1,0 +1,19 @@
+{
+  "name": "Nord",
+  "base": "dark",
+  "colors": {
+    "bg": "#2e3440",
+    "fg": "#d8dee9",
+    "muted": "#616e88",
+    "accent": "#88c0d0",
+    "info": "#81a1c1",
+    "red": "#bf616a",
+    "green": "#a3be8c",
+    "yellow": "#ebcb8b",
+    "orange": "#d08770",
+    "blue": "#81a1c1",
+    "purple": "#b48ead",
+    "pink": "#b48ead",
+    "cyan": "#8fbcbb"
+  }
+}

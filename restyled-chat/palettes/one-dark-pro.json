@@ -1,0 +1,19 @@
+{
+  "name": "One Dark Pro",
+  "base": "dark",
+  "colors": {
+    "bg": "#282c34",
+    "fg": "#abb2bf",
+    "muted": "#5c6370",
+    "accent": "#61afef",
+    "info": "#56b6c2",
+    "red": "#e06c75",
+    "green": "#98c379",
+    "yellow": "#e5c07b",
+    "orange": "#d19a66",
+    "blue": "#61afef",
+    "purple": "#c678dd",
+    "pink": "#c678dd",
+    "cyan": "#56b6c2"
+  }
+}

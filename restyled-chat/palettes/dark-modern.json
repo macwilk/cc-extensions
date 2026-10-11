@@ -1,0 +1,19 @@
+{
+  "name": "Dark Modern",
+  "base": "dark",
+  "colors": {
+    "bg": "#1f1f1f",
+    "fg": "#cccccc",
+    "muted": "#9d9d9d",
+    "accent": "#4daafc",
+    "info": "#9cdcfe",
+    "red": "#f85149",
+    "green": "#2ea043",
+    "yellow": "#d7ba7d",
+    "orange": "#ce9178",
+    "blue": "#569cd6",
+    "purple": "#c586c0",
+    "pink": "#c586c0",
+    "cyan": "#4ec9b0"
+  }
+}

@@ -4,7 +4,7 @@ Mods for the Claude Code terminal. Each mod works on its own, so install only th
 want.
 
 - [`cleaner-tool-lines`](#cleaner-tool-lines): one line for each tool call
-- [`restyled-chat`](#restyled-chat): color themes and full-width code blocks
+- [`restyled-chat`](#restyled-chat): color themes, and code blocks in the colors of the theme
 
 ## Get started
 
@@ -33,7 +33,8 @@ line mean, see the [`cleaner-tool-lines` README](cleaner-tool-lines/README.md).
 
 ## restyled-chat
 
-Adds color themes, and draws each code block in a reply as one full-width shaded block.
+Adds color themes. Draws each code block in a reply as a shaded block with a copy button, and colors
+the code as VS Code colors it under the same theme.
 
 <p>
   <img src="media/restyled-chat-before.png" alt="A prompt, an edit and a reply with a code block, in the dark theme of Claude Code with no mod" width="49%">
@@ -68,6 +69,21 @@ After you change a palette or the theme builder, also run the following command:
 python3 restyled-chat/scripts/build_theme.py --check restyled-chat/palettes restyled-chat/themes
 ```
 
+## Update Shiki
+
+The `restyled-chat/shiki` directory and the `restyled-chat/hooks/shiki-core.mjs` file are generated
+from [Shiki](https://shiki.style). To rebuild them, for example after you change the Shiki version
+in `tools/shiki/package.json`, run the following commands:
+
+```sh
+cd tools/shiki
+npm install
+npm run build
+```
+
+Claude Code reads no module file over 1 MB and loads no module on demand. That is why only the
+engine of Shiki is a module, and the mod reads each grammar and theme as a data file.
+
 ## Credit
 
 The idea of one line for each tool call, and the idea of restyling replies, come from
@@ -81,3 +97,6 @@ the [GitHub theme](https://github.com/primer/github-vscode-theme) for VS Code,
 [Tokyo Night](https://github.com/tokyo-night/tokyo-night-vscode-theme), and the
 [Dark Modern](https://github.com/microsoft/vscode/tree/main/extensions/theme-defaults) and
 [Monokai](https://github.com/microsoft/vscode/tree/main/extensions/theme-monokai) themes of VS Code.
+
+The code colors come from [Shiki](https://shiki.style). The licenses of Shiki, of its grammars and
+themes, and of Noctis are in `restyled-chat/shiki/licenses`.

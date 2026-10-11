@@ -3,7 +3,10 @@
 The `restyled-chat` mod changes how the Claude Code terminal looks:
 
 - It adds color themes.
-- It draws each fenced code block in a reply as one full-width shaded block.
+- It draws each fenced code block in a reply as one full-width shaded block. The first row of the
+  block shows the language and a **copy** button.
+- It colors the code in a block as VS Code colors it under the same theme, and a `diff` block from
+  the diff colors of the theme.
 
 <p>
   <img src="../media/restyled-chat-before.png" alt="A prompt, an edit and a reply with a code block, in the dark theme of Claude Code with no mod" width="49%">
@@ -27,6 +30,21 @@ Each preview shows the same conversation.
   <img src="../media/themes/solarized-dark.png" alt="The Solarized Dark theme" width="49%">
   <img src="../media/themes/tokyo-night.png" alt="The Tokyo Night theme" width="49%">
 </p>
+
+## Code colors
+
+The mod colors code with [Shiki](https://shiki.style), which uses the grammars and the theme files
+of VS Code. Code takes the colors and the font styles that VS Code gives it under the theme of the
+same name.
+
+Code keeps the colors of Claude Code in the following cases:
+
+- Shiki has no grammar for the language. Shiki has grammars for more than 200 languages.
+- Shiki has no theme of the same name as the Claude Code theme, for example under a built-in theme
+  of Claude Code.
+- The block is too long to draw line by line.
+
+The mod reads a grammar or a theme from its `shiki` directory the first time that a reply needs it.
 
 ## Install the mod
 
@@ -70,8 +88,12 @@ remaining colors, set the same color scheme in your terminal.
    python3 scripts/build_theme.py palettes/SLUG.json --out themes
    ```
 
-3. Add the theme and a preview of it to [Themes](#themes).
-4. In a Claude Code session that is already open, run `/reload-plugins`.
+3. Give the theme its code colors. The mod uses the VS Code theme named `SLUG` in `shiki/themes`. If
+   Shiki doesn't ship a theme of that name, save the VS Code theme file as
+   `tools/shiki/themes/SLUG.json` at the root of the repository, and then
+   [update Shiki](../README.md#update-shiki).
+4. Add the theme and a preview of it to [Themes](#themes).
+5. In a Claude Code session that is already open, run `/reload-plugins`.
 
 The theme appears in `/theme` under its `name`. If you change the `base` of a theme that a session
 already uses, start a new session to see the change. The `/reload-plugins` command doesn't apply it.

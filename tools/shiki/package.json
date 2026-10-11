@@ -1,0 +1,12 @@
+{
+  "name": "restyled-chat-shiki-build",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2",
+    "shiki": "4.5.0"
+  }
+}

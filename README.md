@@ -98,5 +98,13 @@ the [GitHub theme](https://github.com/primer/github-vscode-theme) for VS Code,
 [Dark Modern](https://github.com/microsoft/vscode/tree/main/extensions/theme-defaults) and
 [Monokai](https://github.com/microsoft/vscode/tree/main/extensions/theme-monokai) themes of VS Code.
 
-The code colors come from [Shiki](https://shiki.style). The licenses of Shiki, of its grammars and
-themes, and of Noctis are in `restyled-chat/shiki/licenses`.
+The code colors come from [Shiki](https://shiki.style).
+
+## License
+
+The mods are licensed under the [GNU General Public License](LICENSE), version 3 or any later
+version.
+
+The engine, the grammars and the themes of Shiki, and the Noctis Uva theme, are the work of others
+and keep their own licenses. Those files are `restyled-chat/hooks/shiki-core.mjs` and the
+`restyled-chat/shiki` directory, and their licenses are in `restyled-chat/shiki/licenses`.

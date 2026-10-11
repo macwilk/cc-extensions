@@ -4,5 +4,6 @@
   "description": "Color themes and full-width code blocks for the Claude Code terminal",
   "author": {
     "name": "macwilk"
-  }
+  },
+  "types": "./types/index.d.ts"
 }

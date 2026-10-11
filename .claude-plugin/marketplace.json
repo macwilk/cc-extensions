@@ -1,0 +1,17 @@
+{
+  "name": "cc-extensions",
+  "description": "Mods that make the Claude Code terminal easier to read",
+  "owner": { "name": "macwilk" },
+  "plugins": [
+    {
+      "name": "cleaner-tool-lines",
+      "source": "./cleaner-tool-lines",
+      "description": "Draws each tool call as one line, so the conversation reads straight through. Click a line to open the call."
+    },
+    {
+      "name": "restyled-chat",
+      "source": "./restyled-chat",
+      "description": "Color themes and full-width code blocks for the Claude Code terminal"
+    }
+  ]
+}

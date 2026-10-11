@@ -1,6 +1,5 @@
 {
   "name": "cleaner-tool-lines",
-  "version": "0.1.0",
   "description": "Draws each tool call as one line, so the conversation reads straight through. Click a line to open the call.",
   "author": {
     "name": "macwilk"

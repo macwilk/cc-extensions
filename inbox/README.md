@@ -5,7 +5,7 @@ for your answer, tasks only you can do, findings, and asks that are not finished
 the right end of the status row shows how many items are open, in the color of the first section
 that waits on you. Click the handle to open the list in a side panel.
 
-https://github.com/user-attachments/assets/0091b665-7ee2-4b8a-858b-d5a6d0ed09d2
+https://github.com/user-attachments/assets/dddadf4f-ad5e-4a3b-854c-acfc6834fd69
 
 The idea comes from [petekp/inbox](https://github.com/petekp/inbox).
 

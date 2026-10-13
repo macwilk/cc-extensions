@@ -223,7 +223,7 @@ export function toolLine(use: Use, cwd = '') {
   if (use.tool === 'Agent' || use.tool === 'Task') return `Agent: ${text(input.description)} => ${ended.startsWith('Async agent launched') ? 'started in the background' : ended}`
   // What the person chose in a dialog is theirs, and is told whole.
   if (use.tool === 'AskUserQuestion') return `Question dialog: ${flat(text(use.text)).slice(0, 700)}`
-  if (use.tool === 'Workflow') return `Workflow: ${text(input.name) || /name:\s*['"]([^'"]+)['"]/.exec(text(input.script))?.[1] || text(input.scriptPath) || 'a script'} => ${ended}`
+  if (use.tool === 'Workflow') return `Workflow: ${text(input.name) || /name:\s*['"]([^'"]+)['"]/.exec(text(input.script))?.[1] || text(input.scriptPath) || 'a script'} => ${ended.startsWith('Workflow launched') ? 'started in the background' : ended}`
   if (use.tool.startsWith('mcp__inbox__')) return input.action === 'record' ? `Inbox record: ${text(input.title)} => ${ended}` : null
   // A subagent's report is told as its report, and Claude's todo list as the list.
   if (['Read', 'Grep', 'Glob', 'ToolSearch', 'TodoWrite', 'TaskCreate', 'TaskUpdate', 'TaskList', 'TaskGet', 'SubagentHandback'].includes(use.tool)) return null

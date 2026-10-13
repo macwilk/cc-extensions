@@ -112,7 +112,7 @@ const passes = {
   did: [] as string[],
   audits: new Set<string>(),
   depth: readAt(undefined),
-  agents: new Map<string, Subagent & { told: number; report?: string }>(),
+  agents: new Map<string, Subagent & { told: number; report?: string; calls: string[] }>(),
 }
 const isClosed = (item: Item) => item.status === 'done' || item.status === 'dropped'
 
@@ -627,7 +627,7 @@ async function subagentsDid($: EngineInterface, turn: Sent[]) {
   const notice = turn.map(sent => sent.text).join('\n')
   const parts: string[] = []
   for (const [id, agent] of passes.agents) {
-    const { lines, said } = await workOf($, id, agent.report)
+    const { lines, said } = await workOf($, id, agent.calls, agent.report)
     if (lines.length > agent.told || agent.isDone) parts.push(agentPart(agent, lines.slice(agent.told), agent.isDone && !notice.includes(id) ? (agent.report ?? '') : '', said))
     agent.told = lines.length
     if (agent.isDone) passes.agents.delete(id)
@@ -637,18 +637,21 @@ async function subagentsDid($: EngineInterface, turn: Sent[]) {
 }
 
 /**
- * A subagent's work as its own conversation holds it: its tool calls as lines, and what it wrote
- * before its report. One whose conversation the engine will not hand over has neither.
+ * A subagent's work: its tool calls as lines, and what it wrote before its report. The calls are
+ * in two places, as the main conversation's are: the subagent's own conversation and `calls`, the
+ * list this mod kept as they were made. The engine hands over no conversation for a workflow's
+ * agent, so the longer of the two is the whole, and what such an agent wrote along the way is not known.
  */
-async function workOf($: EngineInterface, id: string, report = '') {
+async function workOf($: EngineInterface, id: string, calls: string[], report = '') {
   const rows = await $.session.messages({ agentId: id }).catch(() => [])
   const messages = Array.isArray(rows) ? (rows as Message[]) : []
   // A call still under way has no outcome yet: it and the calls after it are told once it has one.
   const uses = messages.flatMap(message => message.toolUses ?? [])
   const under = uses.findIndex(use => use.text === undefined && use.result === undefined)
+  const held = (under < 0 ? uses : uses.slice(0, under)).flatMap(use => toolLine(use, seen.cwd) ?? [])
   const said = messages.flatMap(message => (message.role === 'assistant' && (message.text ?? '').trim() !== '' ? [(message.text ?? '').trim()] : []))
 
-  return { lines: (under < 0 ? uses : uses.slice(0, under)).flatMap(use => toolLine(use, seen.cwd) ?? []), said: said.at(-1) === report.trim() ? said.slice(0, -1) : said }
+  return { lines: held.length >= calls.length ? held : calls, said: said.at(-1) === report.trim() ? said.slice(0, -1) : said }
 }
 
 /**
@@ -656,8 +659,8 @@ async function workOf($: EngineInterface, id: string, report = '') {
  * wrong or was never run, never an ask, and all such audits together open no more than a few items
  * between two prompts of the person's, however many subagents a workflow starts.
  */
-async function agentPass($: EngineInterface, id: string, agent: Subagent, report: string) {
-  const { lines, said } = await workOf($, id, report)
+async function agentPass($: EngineInterface, id: string, agent: Subagent, calls: string[], report: string) {
+  const { lines, said } = await workOf($, id, calls, report)
   if (lines.length === 0 && report.trim() === '') return
   const reply = await ask($, 'agent audit', { model: passes.depth.model, system: AGENT_RULES, prompt: agentAsk(await ledgerOf($), agent, lines, said, report), maxTokens: 1500, effort: 'medium' })
   const found = reply === null ? [] : readAgent(reply)
@@ -880,7 +883,16 @@ export const register: Register = (on, options) => {
     }
     const item = (await ledgerOf($)).items.find(one => one.check?.state === 'running' && one.check.agent === agent)
     // An agent is the mod's while a look of its is running, and stays so once the look has ended or was stopped.
-    if (!item && !(await viewOf($)).agents.includes(agent)) return next(e)
+    if (!item && !(await viewOf($)).agents.includes(agent)) {
+      // A call of a subagent of Claude's: kept for the reply's read, as Claude's own are. The engine
+      // hands over no conversation for a workflow's agent, so this list is all there is of its calls.
+      const answer = await next(e)
+      const said = answer as { text?: unknown; deny?: unknown }
+      const line = toolLine(useOf(e as unknown as Record<string, unknown>, String(said.text ?? said.deny ?? '')), seen.cwd)
+      if (line !== null) passes.agents.get(agent)?.calls.push(line)
+
+      return answer
+    }
     if ((e.tool as string) === HAND_BACK) {
       if (item) await endCheck($, item.id, agent, String((e as { message?: unknown }).message ?? ''))
       const told = item ? RECEIVED : STOPPED
@@ -933,7 +945,7 @@ export const register: Register = (on, options) => {
     const started = await next(e)
     if (started.agentId === undefined || e.subagentType === AGENT_TYPE) return started
     const name = e.description || e.subagentType
-    passes.agents.set(started.agentId, { name, type: e.subagentType, isBackground: e.background, isInWorkflow: e.workflow !== undefined, isDone: false, task: e.prompt, told: 0 })
+    passes.agents.set(started.agentId, { name, type: e.subagentType, isBackground: e.background, isInWorkflow: e.workflow !== undefined, isDone: false, task: e.prompt, told: 0, calls: [] })
     // A workflow's agents are listed as one task, the workflow, and a teammate idles and never ends.
     if (e.background && e.workflow === undefined && e.parentAgentId === undefined && e.isTeammate !== true) void followTask($, started.agentId, name, `A subagent that was told: ${clip(e.prompt, 300)}`)
 
@@ -1006,7 +1018,7 @@ export const register: Register = (on, options) => {
       const helper = passes.agents.get(agent)
       if (helper) {
         // Audited once, at the end of its first run: a subagent sent a further message runs again.
-        if (passes.depth.isAuditingAgents && !helper.isDone) queued($, () => agentPass($, agent, { ...helper }, e.answer))
+        if (passes.depth.isAuditingAgents && !helper.isDone) queued($, () => agentPass($, agent, { ...helper }, [...helper.calls], e.answer))
         Object.assign(helper, { isDone: true, report: e.answer })
         await record($, now => now.items.filter(one => one.kind === 'running' && one.status === 'open' && one.key === agent).map(one => ({ type: 'close', id: one.id, how: 'done', by: 'engine', reason: 'The subagent ended.' })))
       }

@@ -228,6 +228,26 @@ test('a reply is read against every tool call of its turn, the ones a compaction
   expect(kept.audits[1]).toContain('WHAT CLAUDE DID\nWrite: README.md\n')
 })
 
+// The engine hands a mod no conversation for an agent of a workflow, so its calls are known only as they are made.
+test("a workflow agent's calls and report reach the reply's read, though the engine hands over no conversation for it", async ($, on) => {
+  const { book, clock, kept } = world(on)
+  on('tool.call', async () => ({ result: {}, text: 'alpha-marker' }) as never)
+  on('agent.spawn', async () => ({ model: 'sonnet', agentId: 'a1' }))
+  await start($)
+  await $.prompt.submit({ text: 'run the workflow', wait: false, origin: { kind: 'composer' } })
+  await clock.advance(5)
+  await $.turn.start({ text: 'run the workflow', turnId: 't1' })
+  await $.agent.spawn({ tool_use_id: 'u1', prompt: 'Run echo alpha-marker.', description: 'alpha', subagentType: 'workflow-subagent', parentModel: 'opus', background: true, fork: false, workflow: { runId: 'wf_1', agentIndex: 1 } } as never)
+  await $.tool.call({ tool: 'Bash', command: 'echo alpha-marker', tool_use_id: 'u2', agentId: 'a1' } as never)
+  await $.turn.complete({ answer: 'alpha printed its marker.', durationMs: 5, isAborted: false, turnId: 'ta', agentId: 'a1', reason: 'answer' })
+  await $.turn.complete({ answer: 'The workflow is done.', durationMs: 10, isAborted: false, turnId: 't1', reason: 'answer' })
+  await clock.advance(5)
+
+  expect(kept.audits[0]).toContain('WHAT ITS SUBAGENTS DID\n"alpha" (workflow-subagent, in a workflow, in the background, ended)\n  Bash: echo alpha-marker => alpha-marker\n  Its report: alpha printed its marker.')
+  // A workflow's agents are listed as one task, the workflow, and never one by one.
+  expect(book().items.filter(item => item.kind === 'running')).toEqual([])
+})
+
 test('a check that fails opens one item, and the same check passing closes it', async ($, on) => {
   const { book, clock } = world(on)
   const run = { hasFailed: true }

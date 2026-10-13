@@ -1155,12 +1155,24 @@ export const register: Register = (on, options) => {
       </Button>
     )
 
+    // What a model wrote is drawn as Markdown, so that its lists read as lists and its commands and
+    // paths as code. A surface without Markdown gets the same words as plain lines.
+    const Markdown = 'Markdown' in ui ? ui.Markdown : undefined
+    const proseOf = (text: string, room: number) =>
+      Markdown ? (
+        <Box width={room}>
+          <Markdown text={text} />
+        </Box>
+      ) : (
+        <Box flexDirection="column">
+          {text.split('\n').flatMap(line => wrapped(line, room).map(part => <Text>{part}</Text>))}
+        </Box>
+      )
+
     const fieldOf = (label: string, text: string, color: Color, indent = 0) => (
       <Box flexDirection="column" marginTop={1}>
         <Text color={color}>{label}</Text>
-        {wrapped(text, width - 5 - indent).map(line => (
-          <Text>{line}</Text>
-        ))}
+        {proseOf(text, width - 5 - indent)}
       </Box>
     )
 
@@ -1320,9 +1332,7 @@ export const register: Register = (on, options) => {
               <Text color={outcome ? outcome.color : 'success'}>
                 {outcome ? outcome.head : wordsOf(row).back} {clockOf(check.at)}
               </Text>
-              {wrapped(check.text ?? '', width - 5 - indent).map(line => (
-                <Text>{line}</Text>
-              ))}
+              {proseOf(check.text ?? '', width - 5 - indent)}
               <Box flexDirection="row" marginTop={1}>
                 {check.verdict === 'passed' && buttonOf(`close-${row.id}`, 'Close', closeChecked($, row.id), true)}
                 {check.verdict === 'failed' && buttonOf(`fix-${row.id}`, 'Fix it', addToPrompt($, row.id, sayOfCheck(check)), true)}

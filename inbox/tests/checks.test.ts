@@ -25,9 +25,11 @@ test('a check that passes leaves the item as it is, with what was seen and when'
 // title the agent gave it. What the item was is kept, so that throwing the result away undoes it.
 test('a check that fails makes an issue of the item under the problem found, and dismissing the result undoes that', async () => {
   const ledger = ledgerOf(now => opened(now, 0, 'audit', UNRUN))
-  const failed = after(ledger, checkBack(first(ledger), 'VERDICT: failed\nTITLE: Copy leaves the clipboard empty\nREPORT: Clicked Copy twice and the clipboard stayed empty.', 500))
+  // The report is drawn as Markdown and keeps its list and its backticks. The title is plain text, and loses them.
+  const report = 'The clipboard stays empty.\n- Clicked `Copy` twice\n- `pbpaste` printed nothing'
+  const failed = after(ledger, checkBack(first(ledger), `VERDICT: failed\nTITLE: \`Copy\` leaves the clipboard empty\nREPORT: ${report}`, 500))
 
-  expect(first(failed)).toMatchObject({ kind: 'issue', title: 'Copy leaves the clipboard empty', check: { verdict: 'failed', was: { kind: 'unverified', title: UNRUN.title } } })
+  expect(first(failed)).toMatchObject({ kind: 'issue', title: 'Copy leaves the clipboard empty', check: { verdict: 'failed', text: report, was: { kind: 'unverified', title: UNRUN.title } } })
   // A second look is asked about what was never run, not about the problem the first one named.
   expect(canCheck(first(failed))).toBe(true)
   expect(checkAsk(first(failed))).toContain(`What was never run: ${UNRUN.title}`)

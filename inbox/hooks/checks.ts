@@ -34,6 +34,13 @@ export const STOPPED = 'This look was stopped by the user. End your turn now wit
 /** What closes an issue that a failed check made. What the claim before it was waiting on is not what settles the problem found. */
 export const ISSUE_CLOSE = 'Fix the problem that the check found, and show by running that it is gone.'
 
+/**
+ * How a report is to be written: it is read in a narrow side panel, which draws it as Markdown, by
+ * a person who wants the answer and not how it was reached.
+ */
+const FOR_THE_PANEL =
+  'It is read in a narrow side panel, so each bullet is one short fact on a line of its own that starts with "- ". Put every command, path, file name, id and value in backticks. Leave out process ids, temporary paths and how you went about it, unless the user needs them to act.'
+
 /** True for an item a look in the background can be taken at: a finding that was never run, or something still running. */
 export function canCheck(item: Item) {
   return item.status === 'open' && (item.kind === 'unverified' || item.kind === 'running' || item.check?.was !== undefined)
@@ -49,7 +56,7 @@ export function checkAsk(item: Item) {
       ...(item.key ? [`Its task id: ${item.key}`] : []),
       'Look at what it has written so far: its output, the files it writes, and whether its process is alive.',
       'Report in this form and nothing else:',
-      'REPORT: how far along it is, whether anything has gone wrong, and when it looks like ending, in at most three plain sentences.',
+      `REPORT: where it stands, in one short sentence. Then at most four bullets: how far along it is, whether anything has gone wrong, and when it looks like ending. ${FOR_THE_PANEL}`,
     ].join('\n')
   }
 
@@ -61,8 +68,8 @@ export function checkAsk(item: Item) {
     ...(item.file ? [`The file it is about: ${item.file}`] : []),
     'Report in this form and nothing else:',
     'VERDICT: passed, failed or unclear',
-    'TITLE: only when it failed, the problem you found, as one plain sentence of at most 14 words',
-    'REPORT: what you ran and what you saw, in at most three plain sentences',
+    'TITLE: only when it failed, the problem you found, as one plain sentence of at most 14 words, with no backticks',
+    `REPORT: what you found, in one short sentence. Then at most four bullets: what you ran and what you saw. ${FOR_THE_PANEL}`,
     '"passed" means you ran it and it holds. "failed" means you ran it and it does not hold. "unclear" means you could not run it, or what you saw does not settle it: then the report says why.',
   ].join('\n')
 }
@@ -86,7 +93,8 @@ export function checkBack(item: Item, message: string, at: number): Event[] {
   const said = fieldOf(message, 'VERDICT').toLowerCase()
   const verdict = said.startsWith('passed') ? 'passed' : said.startsWith('failed') ? 'failed' : 'unclear'
   if (verdict !== 'failed') return [{ type: 'patch', id: item.id, patch: { ...was, check: { ...kept, verdict } } }]
-  const title = fieldOf(message, 'TITLE').split('\n')[0] ?? ''
+  // A title is drawn as plain text, where a backtick would show as one.
+  const title = (fieldOf(message, 'TITLE').split('\n')[0] ?? '').replaceAll('`', '')
 
   return [{ type: 'patch', id: item.id, patch: { kind: 'issue', title: title || was.title, close: ISSUE_CLOSE, check: { ...kept, verdict, was } } }]
 }

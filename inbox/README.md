@@ -20,7 +20,7 @@ The panel lists goals first, and then everything that belongs to no goal:
 - **Needs you:** a turn that stopped on an error, checks that failed, questions, questions left
   behind in a question dialog, and your own tasks.
 - **Findings:** issues, opportunities, and claims that were not verified by running.
-- **Running:** commands that Claude left running in the background.
+- **Running:** commands, subagents, and workflows that Claude left running in the background.
 
 Each kind of item has its own mark and color, and every section folds when you click its name.
 
@@ -69,11 +69,13 @@ for a click. Items that you set aside together stay under the name of the work t
 ## How items open and close
 
 - **Without a model:** the mod watches for a turn that ends on an error, a test or type check that
-  fails and later passes, a question dialog that you leave, a background command that ends, and a
-  reload of the plugins or a restart that a task was waiting on.
+  fails and later passes, a question dialog that you leave, a background command, subagent, or
+  workflow that ends, and a reload of the plugins or a restart that a task was waiting on.
 - **On each prompt:** a model reads your message for what it asks and what it answers.
 - **On each reply:** a model reads the exchange for what got done, what the reply skipped, and
-  what it leaves open. Each close records its evidence.
+  what it leaves open. Each close records its evidence. The model is given your message, each tool
+  call with how it ended, what you chose in a question dialog, what Claude wrote during the turn,
+  what its subagents did and reported, and the reply.
 - **By Claude:** one tool, `inbox`, lets Claude close what you asked for as it finishes each
   thing, list the open items, and record a finding. The reply's read checks each close that Claude
   made and reopens one that the exchange does not bear out. Ask Claude to "resolve the findings in
@@ -84,8 +86,19 @@ box, and the inbox goes back to how it stood before that prompt. If you rewind t
 inbox keeps everything, and an item from a prompt that you rewound past is marked `↶`.
 
 The mod uses the `sonnet` model alias of your Claude Code session for both passes, so each exchange
-adds two short model calls to your usage. To use Haiku, which costs less and misses more, run
-`/config` and turn on **Read with Haiku**.
+adds two short model calls to your usage. To change how much of each turn those calls read, run
+`/config` and set **Depth**:
+
+- **Light** reads with Haiku, which costs less and misses more.
+- **Balanced**, the default, reads the latest 80 tool calls of a turn and the end of what each one
+  printed.
+- **Thorough** also reads which files Claude read and searched, what each edit changed, how every
+  other tool ended, the task each subagent was given, and far more of long outputs, replies, and
+  subagent reports. In a conversation of 137 turns, it gave the model about 1.6 times as much to
+  read.
+- **Exhaustive** reads what Thorough reads, and checks every subagent's report against what that
+  subagent ran, with one more model call for each subagent. It lists a report that hides a failure
+  or claims something that was never run.
 
 ## Where the inbox is kept
 

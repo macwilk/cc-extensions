@@ -11,7 +11,7 @@ import { AGENT_SPEC, AGENT_TYPE, ASK_AGAIN_AFTER, CHECKS_AT_ONCE, HAND_BACK, REC
 import { EMPTY, ageOf, apply, carriedTo, forkPoint, layoutOf, marksOf, needsYou, opened, progressOf, replay, rewoundTo, sectionsOf, type GoalBlock, type Section } from './ledger'
 import { checkOf, failedCheck, leftQuestions } from './signals'
 import { TOOL_DESCRIPTION, TOOL_NAME, TOOL_SCHEMA, answerTool } from './tool'
-import { BY_REPLY, LIGHT_MODEL, PROMPT_RULES, READ_MODEL, REPLY_RULES, didLines, forkAsk, lastReplyOf, newest, promptAsk, promptEvents, readFork, readPrompt, readReply, replyAsk, replyEvents, toolLine, toolLines, useOf, type Message } from './workers'
+import { AGENT_OPENS_PER_PROMPT, AGENT_RULES, BY_REPLY, PROMPT_RULES, REPLY_RULES, agentAsk, agentEvents, agentPart, didLines, forkAsk, lastReplyOf, newest, promptAsk, promptEvents, readAgent, readAt, readFork, readPrompt, readReply, replyAsk, replyEvents, saidOf, todoOf, toolLine, toolLines, useOf, type Beside, type Message, type Subagent } from './workers'
 
 const PANE = 'inbox'
 /** Raised whenever the fields of View change, so a value an earlier build stored is told apart from this build's. */
@@ -85,9 +85,9 @@ const PART_SIZE = 2_000_000
 /**
  * What a press handler has no other way to learn: the terminal as last drawn, whether any item may
  * be waiting in the prompt box, so that typing with none waiting costs nothing, and how many items
- * Claude has recorded since the person's last prompt.
+ * Claude has recorded, and the audits of its subagents have opened, since the person's last prompt.
  */
-const seen = { terminal: 0, isFullscreen: true, bodyColumns: 0, placement: '', hasStaged: true, recorded: 0, cwd: '' }
+const seen = { terminal: 0, isFullscreen: true, bodyColumns: 0, placement: '', hasStaged: true, recorded: 0, agentOpened: 0, cwd: '' }
 /** The conversation's log as this session holds it: where its parts are, the part being written and its text, and the writes still to finish. */
 const log = { base: '', part: 0, text: '', marks: '', queue: Promise.resolve() }
 /** What a turn answers: a message of the person's or a notice of the system's, with the asks the message opened. */
@@ -101,9 +101,19 @@ type Sent = { text: string; isNotice: boolean; asked: string[]; before?: { ledge
  * found. A person may type ahead while Claude works, so each reply is audited against what it was
  * a reply to: `waiting` holds what was submitted and has not started a turn yet, and `turn` what
  * the running turn answers. `did` holds the running turn's tool calls, each kept as it is made: a
- * compaction in the middle of a turn takes the earlier ones out of the conversation.
+ * compaction in the middle of a turn takes the earlier ones out of the conversation. `agents` holds
+ * the subagents Claude started, each until a read has been told how it ended: `told` is how many of
+ * its tool calls a read has been given, and `report` what it handed back.
  */
-const passes = { queue: Promise.resolve(), waiting: [] as Sent[], turn: null as Sent[] | null, did: [] as string[], audits: new Set<string>(), model: READ_MODEL }
+const passes = {
+  queue: Promise.resolve(),
+  waiting: [] as Sent[],
+  turn: null as Sent[] | null,
+  did: [] as string[],
+  audits: new Set<string>(),
+  depth: readAt(undefined),
+  agents: new Map<string, Subagent & { told: number; report?: string }>(),
+}
 const isClosed = (item: Item) => item.status === 'done' || item.status === 'dropped'
 
 /**
@@ -589,20 +599,72 @@ async function followCheck($: EngineInterface, command: string, hasFailed: boole
   })
 }
 
-/** A command Claude left running in the background becomes an item, which the notice of its end closes. */
-async function followTask($: EngineInterface, task: string, command: string, description: string) {
+/**
+ * What Claude left running in the background becomes an item: a command, a subagent or a workflow.
+ * `task` is what its end is known by, which the notice of that end names.
+ */
+async function followTask($: EngineInterface, task: string, title: string, why: string) {
   const at = await $.clock.now()
   await record($, now => [
     opened(now, at, 'engine', {
       kind: 'running',
-      title: clip(description || command, 80),
+      title: clip(title, 80),
       from: 'Claude started it in the background.',
-      why: `It runs: ${clip(command, 300)}`,
+      why,
       close: 'It ends by itself, or you ask Claude to stop it.',
       key: task,
       selfCloses: 'When the task ends.',
     }),
   ])
+}
+
+/**
+ * What Claude's subagents did since a read was last told: for each, its tool calls since then and,
+ * once it has ended, its report. A report that came back as the notice this turn answers is in the
+ * read already and is not told twice. A subagent that has ended is told of once and then forgotten.
+ */
+async function subagentsDid($: EngineInterface, turn: Sent[]) {
+  const notice = turn.map(sent => sent.text).join('\n')
+  const parts: string[] = []
+  for (const [id, agent] of passes.agents) {
+    const { lines, said } = await workOf($, id, agent.report)
+    if (lines.length > agent.told || agent.isDone) parts.push(agentPart(agent, lines.slice(agent.told), agent.isDone && !notice.includes(id) ? (agent.report ?? '') : '', said))
+    agent.told = lines.length
+    if (agent.isDone) passes.agents.delete(id)
+  }
+
+  return parts
+}
+
+/**
+ * A subagent's work as its own conversation holds it: its tool calls as lines, and what it wrote
+ * before its report. One whose conversation the engine will not hand over has neither.
+ */
+async function workOf($: EngineInterface, id: string, report = '') {
+  const rows = await $.session.messages({ agentId: id }).catch(() => [])
+  const messages = Array.isArray(rows) ? (rows as Message[]) : []
+  // A call still under way has no outcome yet: it and the calls after it are told once it has one.
+  const uses = messages.flatMap(message => message.toolUses ?? [])
+  const under = uses.findIndex(use => use.text === undefined && use.result === undefined)
+  const said = messages.flatMap(message => (message.role === 'assistant' && (message.text ?? '').trim() !== '' ? [(message.text ?? '').trim()] : []))
+
+  return { lines: (under < 0 ? uses : uses.slice(0, under)).flatMap(use => toolLine(use, seen.cwd) ?? []), said: said.at(-1) === report.trim() ? said.slice(0, -1) : said }
+}
+
+/**
+ * Audits one subagent that has ended: its report against its own tool calls. It opens only what is
+ * wrong or was never run, never an ask, and all such audits together open no more than a few items
+ * between two prompts of the person's, however many subagents a workflow starts.
+ */
+async function agentPass($: EngineInterface, id: string, agent: Subagent, report: string) {
+  const { lines, said } = await workOf($, id, report)
+  if (lines.length === 0 && report.trim() === '') return
+  const reply = await ask($, 'agent audit', { model: passes.depth.model, system: AGENT_RULES, prompt: agentAsk(await ledgerOf($), agent, lines, said, report), maxTokens: 1500, effort: 'medium' })
+  const found = reply === null ? [] : readAgent(reply)
+  if (found.length === 0) return
+  const at = await $.clock.now()
+  const events = await record($, now => agentEvents(now, found, at, AGENT_OPENS_PER_PROMPT - seen.agentOpened))
+  seen.agentOpened += events.length
 }
 
 /** A question dialog that ended: the questions it was left with become items, each with its own answers. */
@@ -675,7 +737,7 @@ async function ask($: EngineInterface, pass: string, request: { model: string; s
 /** Reads the person's message for what it asks and what it answers. It runs while Claude works on the same message. */
 async function promptPass($: EngineInterface, message: string, sent: Sent, lastReply: string) {
   if (message.trim() === '') return
-  const reply = await ask($, 'prompt pass', { model: passes.model, system: PROMPT_RULES, prompt: promptAsk(await ledgerOf($), message, lastReply), maxTokens: 3000, effort: 'low' })
+  const reply = await ask($, 'prompt pass', { model: passes.depth.model, system: PROMPT_RULES, prompt: promptAsk(await ledgerOf($), message, lastReply), maxTokens: 3000, effort: 'low' })
   const said = reply === null ? null : readPrompt(await ledgerOf($), reply)
   // The read of a prompt can come back after the person has taken the prompt back.
   if (!said || sent.isTakenBack) return
@@ -693,13 +755,13 @@ async function promptPass($: EngineInterface, message: string, sent: Sent, lastR
  * open. An item the audit cannot judge from one exchange is put to a fork of the main conversation,
  * which reads all of it from the prompt cache while that is still warm.
  */
-async function replyPass($: EngineInterface, answer: string, turn: Sent[], did: string[]) {
+async function replyPass($: EngineInterface, answer: string, turn: Sent[], did: string[], beside: Beside) {
   const book = await ledgerOf($)
   if (answer.trim() === '') return
   const asked = turn.flatMap(sent => sent.asked)
   const message = turn.map(sent => sent.text).join('\n\n')
   const isNotice = turn.length > 0 && turn.every(sent => sent.isNotice)
-  const reply = await ask($, 'reply audit', { model: passes.model, system: REPLY_RULES, prompt: replyAsk(book, asked, message, isNotice, did, answer), maxTokens: 3000, effort: 'medium' })
+  const reply = await ask($, 'reply audit', { model: passes.depth.model, system: REPLY_RULES, prompt: replyAsk(book, asked, message, isNotice, did, answer, beside), maxTokens: 3000, effort: 'medium' })
   const said = reply === null ? null : readReply(book, reply)
   if (!said) return
   const at = await $.clock.now()
@@ -720,7 +782,7 @@ function audit($: EngineInterface, job: Pending) {
   queued($, async () => {
     try {
       // An audit that a build before this one left in the state has no list of its own.
-      await replyPass($, job.answer, job.turn, job.did ?? didLines((await $.session.messages()) as Message[], 80, seen.cwd))
+      await replyPass($, job.answer, job.turn, job.did ?? didLines((await $.session.messages()) as Message[], undefined, seen.cwd), { said: job.said, agents: job.agents, todo: job.todo })
     } finally {
       passes.audits.delete(job.id)
       await update($, pendingAtom, left => (left?.id === job.id ? null : left))
@@ -729,7 +791,7 @@ function audit($: EngineInterface, job: Pending) {
 }
 
 export const register: Register = (on, options) => {
-  passes.model = options.useHaiku === true ? LIGHT_MODEL : READ_MODEL
+  passes.depth = readAt(options.depth)
 
   on('session.start', async ($, e, next) => {
     seen.cwd = e.cwd
@@ -782,7 +844,7 @@ export const register: Register = (on, options) => {
     const { sent, rest } = sentOf(e.text, added)
     await record($, () => [{ type: 'turn' }, ...sent.map(one => ({ type: 'patch' as const, id: one.id, patch: { sent: one.said || 'Sent with no note.' }, drop: ['isUnsettled' as const] }))])
     await change($, now => ({ ...now, added: {} }))
-    Object.assign(seen, { hasStaged: false, recorded: 0 })
+    Object.assign(seen, { hasStaged: false, recorded: 0, agentOpened: 0 })
     const submitted: Sent = { text: e.text, isNotice: false, asked: [], before }
     passes.waiting.push(submitted)
     // Read now, before Claude starts on this message: what the message answers is the reply before it.
@@ -859,8 +921,30 @@ export const register: Register = (on, options) => {
     const check = checkOf(e.command)
     const said = answer as { isError?: boolean; text?: string; deny?: string; result?: { interrupted?: boolean; backgroundTaskId?: string } }
     const task = said.result?.backgroundTaskId
-    if (task) void followTask($, task, e.command, e.description ?? '')
+    if (task) void followTask($, task, e.description || e.command, `It runs: ${clip(e.command, 300)}`)
     else if (check && said.deny === undefined && !said.result?.interrupted) void followCheck($, check, said.isError === true, said.text ?? '')
+
+    return answer
+  })
+
+  // A subagent of Claude's is kept by its id, so that a read can be told what it did, and one left
+  // running in the background is listed as running until it ends. The mod's own checker is not Claude's.
+  on('agent.spawn', async ($, e, next) => {
+    const started = await next(e)
+    if (started.agentId === undefined || e.subagentType === AGENT_TYPE) return started
+    const name = e.description || e.subagentType
+    passes.agents.set(started.agentId, { name, type: e.subagentType, isBackground: e.background, isInWorkflow: e.workflow !== undefined, isDone: false, task: e.prompt, told: 0 })
+    // A workflow's agents are listed as one task, the workflow, and a teammate idles and never ends.
+    if (e.background && e.workflow === undefined && e.parentAgentId === undefined && e.isTeammate !== true) void followTask($, started.agentId, name, `A subagent that was told: ${clip(e.prompt, 300)}`)
+
+    return started
+  })
+
+  // A workflow runs in the background from the start, and the notice of its end names its task.
+  on('tool.call', { tool: 'Workflow' }, async ($, e, next) => {
+    const answer = await next(e)
+    const run = (answer as { result?: { taskId?: string; workflowName?: string; summary?: string; error?: string } }).result
+    if ((e as { agentId?: string }).agentId === undefined && run?.taskId && !run.error) void followTask($, run.taskId, `Workflow: ${run.workflowName ?? 'a script'}`, run.summary || 'A script of Claude\'s that hands the work to several subagents.')
 
     return answer
   })
@@ -918,6 +1002,14 @@ export const register: Register = (on, options) => {
       const agent = e.agentId
       const item = (await ledgerOf($)).items.find(one => one.check?.state === 'running' && one.check.agent === agent)
       if (item) await endCheck($, item.id, agent, e.answer)
+      // A subagent of Claude's that ended: its last words are its report, and the item that listed it as running closes.
+      const helper = passes.agents.get(agent)
+      if (helper) {
+        // Audited once, at the end of its first run: a subagent sent a further message runs again.
+        if (passes.depth.isAuditingAgents && !helper.isDone) queued($, () => agentPass($, agent, { ...helper }, e.answer))
+        Object.assign(helper, { isDone: true, report: e.answer })
+        await record($, now => now.items.filter(one => one.kind === 'running' && one.status === 'open' && one.key === agent).map(one => ({ type: 'close', id: one.id, how: 'done', by: 'engine', reason: 'The subagent ended.' })))
+      }
 
       return next(e)
     }
@@ -944,9 +1036,10 @@ export const register: Register = (on, options) => {
       // The turn's tool calls are in two places, and either can have lost some: the conversation to
       // a compaction, the mod's own list to a reload of the mod. Neither gains any, so the longer is
       // the whole. Read here and not when the audit runs, by when a new prompt may have been sent.
-      const told = toolLines((await $.session.messages()) as Message[], seen.cwd)
+      const messages = (await $.session.messages()) as Message[]
+      const told = toolLines(messages, seen.cwd)
       const did = newest(passes.did.length >= told.length ? passes.did : told)
-      const job = { id: e.turnId, answer: e.answer, turn: turn.map(({ text, isNotice, asked }) => ({ text, isNotice, asked })), did }
+      const job = { id: e.turnId, answer: e.answer, turn: turn.map(({ text, isNotice, asked }) => ({ text, isNotice, asked })), did, said: saidOf(messages, e.answer), agents: await subagentsDid($, turn), todo: todoOf(messages) }
       await update($, pendingAtom, () => job)
       audit($, job)
     }

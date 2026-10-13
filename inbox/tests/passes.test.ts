@@ -4,7 +4,7 @@ import { RULE, draftOf, sayOf, sentOf } from '../hooks/capture'
 import { EMPTY, apply, goalOpened, opened } from '../hooks/ledger'
 import { checkOf, leftQuestions } from '../hooks/signals'
 import { RECORDS_PER_TURN, answerTool } from '../hooks/tool'
-import { ASKS_PER_PROMPT, didLines, jsonOf, lastReplyOf, promptAsk, promptEvents, readPrompt, readReply, replyAsk, replyEvents, toolLine, useOf } from '../hooks/workers'
+import { ASKS_PER_PROMPT, DEPTHS, agentAsk, agentEvents, agentPart, didLines, readAgent, readAt, jsonOf, lastReplyOf, promptAsk, promptEvents, readPrompt, readReply, replyAsk, replyEvents, saidOf, todoOf, toolLine, useOf } from '../hooks/workers'
 import type { Event, Ledger } from '../types'
 
 const QUESTION = { kind: 'question' as const, title: 'Which license should the mods use?', from: 'My reply.', why: 'The manifests need one.', close: 'Pick one of the answers.', options: ['GPL-3.0-or-later', 'MIT'] }
@@ -16,7 +16,9 @@ function ledgerOf(...steps: ((ledger: Ledger) => Event)[]) {
 
 test('a command is a check only when its exit status is its own', async () => {
   expect(checkOf('npx -p typescript tsc -p inbox')).toBe('npx -p typescript tsc -p inbox')
-  expect(checkOf('cd app && npm test')).toBe(null)
+  expect(checkOf('cd app && npm test')).toBe('cd app && npm test')
+  expect(checkOf('cd app; python3 -m unittest -q')).toBe('cd app; python3 -m unittest -q')
+  expect(checkOf('cd app && npm test; echo done')).toBe(null)
   expect(checkOf('npm test | tail -5')).toBe(null)
   expect(checkOf('pytest tests/unit 2>&1')).toBe('pytest tests/unit 2>&1')
   expect(checkOf('git status')).toBe(null)
@@ -393,6 +395,119 @@ test('a finding Claude records is told to the reply as something it did, and its
   expect(toolLine(useOf(record, 'Recorded as i5.'))).toBe(`Inbox record: ${FINDING.title} => Recorded as i5.`)
   expect(toolLine(useOf(record, 'Not recorded: the inbox already lists this.'))).toBe(`Inbox record: ${FINDING.title} => Not recorded: the inbox already lists this.`)
   for (const action of ['get', 'list', 'close']) expect(toolLine(useOf({ tool: 'mcp__inbox__inbox', tool_use_id: 'u2', action }, 'ok'))).toBe(null)
+})
+
+test('what the user chose in a dialog and a workflow by its name are each a line of what Claude did, and its todo tools are none', async () => {
+  expect(toolLine(useOf({ tool: 'AskUserQuestion', tool_use_id: 'u1', questions: [] }, 'User has answered your questions:\n"Which fruit?"="Apple".'))).toBe('Question dialog: User has answered your questions: "Which fruit?"="Apple".')
+  expect(toolLine(useOf({ tool: 'Workflow', tool_use_id: 'u2', script: "export const meta = {\n  name: 'review-changes',\n}" }, 'Launched.'))).toBe('Workflow: review-changes => Launched.')
+  expect(toolLine(useOf({ tool: 'Agent', tool_use_id: 'u4', description: 'Run the tests' }, 'Async agent launched successfully.\nagentId: a1'))).toBe('Agent: Run the tests => started in the background')
+  for (const tool of ['TodoWrite', 'TaskCreate', 'TaskUpdate', 'SubagentHandback']) expect(toolLine(useOf({ tool, tool_use_id: 'u3' }, 'ok'))).toBe(null)
+})
+
+test('what Claude wrote before its reply is told to the read, apart from the reply', async () => {
+  const messages = [
+    { role: 'user', text: 'old' },
+    { role: 'assistant', text: 'An old reply.' },
+    { role: 'user', text: 'fix both' },
+    { role: 'assistant', text: 'The first is fixed: the test passes.', toolUses: [{ tool: 'Bash', input: { command: 'npm test' }, text: 'ok' }] },
+    { role: 'user', text: '', toolResults: [{}] },
+    { role: 'assistant', text: 'Both are fixed.' },
+  ]
+  const said = saidOf(messages, 'Both are fixed.')
+
+  expect(said).toEqual(['The first is fixed: the test passes.'])
+  expect(replyAsk(EMPTY, [], 'fix both', false, [], 'Both are fixed.', { said })).toContain("WHAT CLAUDE SAID WHILE WORKING\nThe first is fixed: the test passes.\n\nCLAUDE'S REPLY")
+  expect(replyAsk(EMPTY, [], 'fix both', false, [], 'Both are fixed.')).not.toContain('WHAT CLAUDE SAID')
+})
+
+test("Claude's todo list is told while any of it is unfinished, from either tool that keeps it", async () => {
+  const whole = [{ role: 'assistant', toolUses: [{ tool: 'TodoWrite', input: { todos: [{ content: 'Write the test', status: 'completed' }, { content: 'Update the README', status: 'in_progress' }, { content: 'Run the build', status: 'pending' }] } }] }]
+  const byEntry = [
+    {
+      role: 'assistant',
+      toolUses: [
+        { tool: 'TaskCreate', input: { subject: 'Write the test' }, result: { task: { id: '1' } } },
+        { tool: 'TaskCreate', input: { subject: 'Run the build' }, result: { task: { id: '2' } } },
+        { tool: 'TaskUpdate', input: { taskId: '1', status: 'completed' } },
+      ],
+    },
+  ]
+
+  expect(todoOf(whole)).toEqual(['[done] Write the test', '[in progress] Update the README', '[not started] Run the build'])
+  expect(todoOf(byEntry)).toEqual(['[done] Write the test', '[not started] Run the build'])
+  expect(todoOf([...byEntry, { role: 'assistant', toolUses: [{ tool: 'TaskUpdate', input: { taskId: '2', status: 'completed' } }] }])).toEqual([])
+})
+
+test('a subagent is told with its latest tool calls and its report, and only the latest subagents are told', async () => {
+  const agent = { name: 'Run the tests', type: 'general-purpose', isBackground: true, isInWorkflow: false, isDone: true }
+  const part = agentPart(
+    agent,
+    Array.from({ length: (DEPTHS.Balanced?.agentCalls ?? 0) + 2 }, (_, at) => `Bash: step ${at} => ok`),
+    'One test fails.',
+  )
+  const asked = replyAsk(EMPTY, [], 'go', false, [], 'Done.', { agents: Array.from({ length: (DEPTHS.Balanced?.agents ?? 0) + 1 }, (_, at) => `"agent ${at}" (Explore, ended)`) })
+
+  expect(part.split('\n')[0]).toBe('"Run the tests" (general-purpose, in the background, ended)')
+  expect(part).toContain('  [2 earlier tool calls left out]')
+  expect(part.split('\n').at(-1)).toBe('  Its report: One test fails.')
+  expect(asked).toContain('WHAT ITS SUBAGENTS DID\n[1 earlier subagents left out]\n"agent 1"')
+})
+
+test('a thorough read is told what a balanced one leaves out, and an unknown depth is the balanced one', async () => {
+  const read = useOf({ tool: 'Read', tool_use_id: 'u1', file_path: '/app/src/cart.py' }, 'class Cart')
+  const edit = useOf({ tool: 'Edit', tool_use_id: 'u2', file_path: '/app/src/cart.py', old_string: 'total = 0', new_string: 'total = 0.0' }, 'ok')
+  const fetched = useOf({ tool: 'WebFetch', tool_use_id: 'u3', url: 'https://example.test' }, 'The page says the limit is 10 MB.')
+  const run = useOf({ tool: 'Bash', tool_use_id: 'u4', command: 'npm test' }, ['start', 'a', 'b', 'c', 'FAIL cart', 'x', 'y', '1 failed'].join('\n'))
+
+  expect(readAt('Nonsense')).toBe(DEPTHS.Balanced)
+  expect([read, edit, fetched].map(use => toolLine(use, '/app'))).toEqual([null, 'Edit: src/cart.py', 'WebFetch: {"url":"https://example.test"}'])
+  expect(toolLine(run)).toBe('Bash: npm test => start [...] x y 1 failed')
+  expect(readAt('Thorough')).toBe(DEPTHS.Thorough)
+  expect([read, edit, fetched].map(use => toolLine(use, '/app'))).toEqual([
+    'Read: src/cart.py',
+    'Edit: src/cart.py (replaced "total = 0" with "total = 0.0")',
+    'WebFetch: {"url":"https://example.test"} => The page says the limit is 10 MB.',
+  ])
+  expect(toolLine(run)).toContain('FAIL cart')
+  expect(readAt('Light')?.model).toBe('haiku')
+  readAt('Balanced')
+})
+
+test('a deeper read is told the task a subagent was given and what it wrote along the way', async () => {
+  const agent = { name: 'Run the tests', type: 'general-purpose', isBackground: false, isInWorkflow: true, isDone: true, task: 'Run the tests\nand report.' }
+
+  expect(agentPart(agent, [], 'All pass.', ['Starting.'])).toBe('"Run the tests" (general-purpose, in a workflow, ended)\n  Its report: All pass.')
+  readAt('Thorough')
+  expect(agentPart(agent, ['Bash: npm test => ok'], 'All pass.', ['Starting.', 'Half way.'])).toBe(
+    ['"Run the tests" (general-purpose, in a workflow, ended)', '  Its task: Run the tests and report.', '  Bash: npm test => ok', '  It wrote along the way: Starting. / Half way.', '  Its report: All pass.'].join('\n'),
+  )
+  readAt('Balanced')
+})
+
+test('the audit of a subagent opens only issues and untested claims, within its cap and never twice', async () => {
+  const more = { why: 'It only read files.', close: 'Run the tests.' }
+  const found = readAgent(
+    JSON.stringify({
+      open: [
+        { kind: 'ask', title: 'Do more work on the cart', ...more },
+        { kind: 'unverified', title: 'The subagent said the tests pass and never ran them', ...more },
+        { kind: 'unverified', title: 'A second untested claim about the build', ...more },
+        { kind: 'issue', title: 'The cart total is wrong for an empty cart', ...more },
+        { kind: 'issue', title: 'A third finding that is over the cap', ...more },
+      ],
+    }),
+  )
+  const events = agentEvents(EMPTY, found, 5, 6)
+
+  expect(found.map(item => item.kind)).toEqual(['unverified', 'issue'])
+  expect(events.map(event => event.type)).toEqual(['open', 'open'])
+  expect(agentEvents(events.reduce(apply, EMPTY), found, 6, 6)).toEqual([])
+  expect(agentEvents(EMPTY, found, 5, 1).length).toBe(1)
+  expect([readAt('Exhaustive').isAuditingAgents, readAt('Thorough').isAuditingAgents]).toEqual([true, false])
+  readAt('Balanced')
+  expect(agentAsk(EMPTY, { name: 'Run the tests', type: 'Explore', isBackground: false, isInWorkflow: false, isDone: true, task: 'Run them.' }, ['Bash: npm test => ok'], [], 'All pass.')).toContain(
+    'THE TASK CLAUDE GAVE IT\nRun them.\n\nWHAT IT DID\nBash: npm test => ok\n\nITS REPORT\nAll pass.',
+  )
 })
 
 test('a reply that is not JSON is read as nothing', async () => {

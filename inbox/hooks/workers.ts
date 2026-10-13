@@ -12,12 +12,70 @@ import { apply, goalOpened, isDropped, isListed, opened, progressOf } from './le
  */
 export const READ_MODEL = 'sonnet'
 export const LIGHT_MODEL = 'haiku'
-/** The most new items one reply may open, and the most items one reply may send to the fork. */
+/** The most new items one reply may open, and the most entries of Claude's todo list one read is given. */
 export const OPENS_PER_REPLY = 3
-export const FORKS_PER_REPLY = 2
+export const TODOS_PER_READ = 20
 
-type Use = { tool: string; input?: Record<string, unknown>; text?: string }
+/**
+ * How much of a turn the passes are given, which is what a read costs. Counts are of tool calls,
+ * lines and subagents, and the rest are characters.
+ */
+export type Depth = {
+  model: string
+  /** The most tool calls of a turn, and of how each ended: its last lines after its first, and the characters of that. */
+  calls: number
+  tail: number
+  ending: number
+  /** Of an exchange: the reply, the message it answers, and what Claude wrote before the reply. */
+  reply: number
+  message: number
+  said: number
+  /** Of a prompt as it is read for what it asks: the prompt, and the reply it answers. */
+  prompt: number
+  lastReply: number
+  /** The most subagents, and of each: its tool calls, its report, the task it was given, and what it wrote along the way. */
+  agents: number
+  agentCalls: number
+  report: number
+  task: number
+  agentSaid: number
+  /** The most items one reply may put to a fork of the conversation, which reads all of it. */
+  forks: number
+  /** Whether a read is also told which files were read and searched, what each edit changed, and how every other tool ended. */
+  isFull: boolean
+  /** Whether every subagent's report is audited against its own tool calls, with a model call of its own. */
+  isAuditingAgents: boolean
+}
+const BALANCED: Depth = { model: READ_MODEL, calls: 80, tail: 3, ending: 500, reply: 9000, message: 4000, said: 6000, prompt: 6000, lastReply: 5000, agents: 12, agentCalls: 10, report: 2000, task: 0, agentSaid: 0, forks: 2, isFull: false, isAuditingAgents: false }
+const THOROUGH: Depth = { model: READ_MODEL, calls: 400, tail: 12, ending: 2000, reply: 40000, message: 20000, said: 30000, prompt: 30000, lastReply: 20000, agents: 60, agentCalls: 60, report: 12000, task: 2000, agentSaid: 4000, forks: 6, isFull: true, isAuditingAgents: false }
+/**
+ * The depths a person can choose. `Light` reads what `Balanced` reads, with the lighter model, and
+ * `Exhaustive` reads what `Thorough` reads and audits each subagent as the main conversation is audited.
+ */
+export const DEPTHS: Record<string, Depth> = {
+  Light: { ...BALANCED, model: LIGHT_MODEL },
+  Balanced: BALANCED,
+  Thorough: THOROUGH,
+  Exhaustive: { ...THOROUGH, isAuditingAgents: true },
+}
+/** The most items the audit of one subagent may open, and the most that all of them may open between two prompts of the person's. */
+export const OPENS_PER_AGENT = 2
+export const AGENT_OPENS_PER_PROMPT = 6
+/** The depth the passes read at: set from the person's setting when the mod loads. */
+let depth = BALANCED
+
+export function readAt(name: unknown) {
+  depth = (typeof name === 'string' ? DEPTHS[name] : undefined) ?? BALANCED
+
+  return depth
+}
+
+type Use = { tool: string; input?: Record<string, unknown>; text?: string; result?: unknown }
 export type Message = { role: string; text?: string; toolUses?: Use[]; toolResults?: unknown[] }
+/** A subagent as a read is told of it: what Claude called it, its type, how it ran, and the task Claude gave it. */
+export type Subagent = { name: string; type: string; isBackground: boolean; isInWorkflow: boolean; isDone: boolean; task?: string }
+/** What a read is given of a turn besides its tool calls and its reply. */
+export type Beside = { said?: string[]; agents?: string[]; todo?: string[] }
 export type PromptRead = { asks: { title: string; done: string; quote: string; goal: string | null; isHeld: boolean }[]; answers: { id: string; answer: string }[]; isWrapUp: boolean }
 /** The most asks one message can open. A message that goes through a list of requests gives one for each. */
 export const ASKS_PER_PROMPT = 20
@@ -57,6 +115,8 @@ export const REPLY_RULES = `You audit one exchange between a user and Claude, a 
 
 {"closed": [{"id": "", "how": "done", "reason": ""}], "missed": [], "unsettled": [], "unsure": [{"id": "", "question": ""}], "reopened": [{"id": "", "why": ""}], "updated": [{"id": "", "why": "", "close": ""}], "open": [{"kind": "", "title": "", "from": "", "why": "", "close": "", "goal": null}]}
 
+What you are given of the turn: WHAT CLAUDE DID lists its tool calls, each with how it ended. A line there that starts "Question dialog" holds what the user chose in a dialog Claude put up: those choices are the user's own, as a message of theirs is, and can answer an open question. WHAT CLAUDE SAID WHILE WORKING, when present, is what Claude wrote to the user earlier in the same turn, before its reply: the user read it, so what it reports, asks or leaves open counts as the reply's own does. WHAT ITS SUBAGENTS DID, when present, lists the helpers Claude handed work to, each with its tool calls and, once it has ended, its report: that work is Claude's, so it shows what was run and changed, and a problem a report names is a problem whether or not the reply repeats it. CLAUDE'S OWN TODO LIST, when present, is its working list as the turn ended: an entry not finished there is a sign that the ask it belongs to is not done, unless the tool calls or the reply show that work done. Never open an item for a todo entry alone.
+
 An inbox that only grows is useless, so closing what this exchange settled matters as much as opening what it leaves. Go through every open item, not only the marked ones.
 
 closed: each open item this exchange settled.
@@ -92,6 +152,7 @@ Do not open: what this exchange already resolved; what the reply says it will do
 
 const cut = (text: string, room: number) => (text.length <= room ? text : `${text.slice(0, Math.floor(room * 0.6))}\n[...]\n${text.slice(-Math.floor(room * 0.4))}`)
 const text = (value: unknown) => (typeof value === 'string' ? value.trim() : '')
+const flat = (lines: string) => lines.split(/\s*\n\s*/).filter(Boolean).join(' ')
 const list = (value: unknown): unknown[] => (Array.isArray(value) ? value : [])
 
 /** The open items as lines a model reads, each with its id, and with what marks it for this exchange. */
@@ -119,18 +180,25 @@ export function lastReplyOf(messages: Message[]) {
 
 /** `lastReply` is what the message answers, given so that "those" and "the second one" can be told. */
 export function promptAsk(ledger: Ledger, message: string, lastReply = '') {
-  return `${inboxLines(ledger)}\n\nCLAUDE'S LAST REPLY\n${cut(lastReply, 5000) || 'None.'}\n\nMESSAGE\n${cut(message, 6000)}`
+  return `${inboxLines(ledger)}\n\nCLAUDE'S LAST REPLY\n${cut(lastReply, depth.lastReply) || 'None.'}\n\nMESSAGE\n${cut(message, depth.prompt)}`
 }
 
-/** How a tool call ended: its first line and its last three, since a run's verdict is at the end of what it prints. */
+/** How a tool call ended: its first line and its last few, since a run's verdict is at the end of what it prints. */
 function endOf(output: string) {
   const lines = output
     .split('\n')
     .map(line => line.trim())
     .filter(Boolean)
-  const kept = lines.length <= 4 ? lines : [lines[0] ?? '', '[...]', ...lines.slice(-3)]
+  const kept = lines.length <= depth.tail + 1 ? lines : [lines[0] ?? '', '[...]', ...lines.slice(-depth.tail)]
 
-  return kept.join(' ').slice(0, 500)
+  return kept.join(' ').slice(0, depth.ending)
+}
+
+/** What an edit changed or a new file starts with, for a read that is told as much. */
+function changeOf(input: Record<string, unknown>) {
+  if (typeof input.old_string === 'string') return ` (replaced ${JSON.stringify(flat(text(input.old_string)).slice(0, 300))} with ${JSON.stringify(flat(text(input.new_string)).slice(0, 300))})`
+
+  return typeof input.content === 'string' ? ` (${input.content.split('\n').length} lines, starting ${JSON.stringify(flat(input.content).slice(0, 300))})` : ''
 }
 
 /** A file's path from the project's folder when the file is in it: what an item says of a file is read by the person, who knows it by that path. */
@@ -141,18 +209,110 @@ function fromProject(path: string, cwd: string) {
 /**
  * One tool call as a line: what was run or changed, and how it ended. Reading and searching are
  * left out, and so is the inbox tool but for a finding it was given to record, which can be the
- * very thing the person asked for.
+ * very thing the person asked for. A read at full depth is told more: which files were read and
+ * searched, what each edit changed, a plan whole, and how every other tool ended.
  */
 export function toolLine(use: Use, cwd = '') {
   const input = use.input ?? {}
   const ended = endOf(text(use.text))
-  if (use.tool === 'Bash') return `Bash: ${text(input.command).split('\n').join(' ').slice(0, 600)} => ${ended || 'no output'}`
-  if (use.tool === 'Edit' || use.tool === 'Write' || use.tool === 'NotebookEdit') return `${use.tool}: ${fromProject(text(input.file_path) || text(input.notebook_path), cwd)}`
-  if (use.tool === 'Agent' || use.tool === 'Task') return `Agent: ${text(input.description)} => ${ended}`
+  if (use.tool === 'Bash') return `Bash: ${text(input.command).split('\n').join(' ').slice(0, depth.isFull ? 2000 : 600)} => ${ended || 'no output'}`
+  if (use.tool === 'Edit' || use.tool === 'Write' || use.tool === 'NotebookEdit') return `${use.tool}: ${fromProject(text(input.file_path) || text(input.notebook_path), cwd)}${depth.isFull ? changeOf(input) : ''}`
+  if (depth.isFull && ['Read', 'Grep', 'Glob'].includes(use.tool)) return `${use.tool}: ${[text(input.pattern), fromProject(text(input.file_path) || text(input.path), cwd)].filter(Boolean).join(' in ')}`
+  if (depth.isFull && use.tool === 'ExitPlanMode') return `Plan: ${cut(text(input.plan), 4000)}`
+  // One started in the background answers with the engine's notes to Claude, which say nothing of the work.
+  if (use.tool === 'Agent' || use.tool === 'Task') return `Agent: ${text(input.description)} => ${ended.startsWith('Async agent launched') ? 'started in the background' : ended}`
+  // What the person chose in a dialog is theirs, and is told whole.
+  if (use.tool === 'AskUserQuestion') return `Question dialog: ${flat(text(use.text)).slice(0, 700)}`
+  if (use.tool === 'Workflow') return `Workflow: ${text(input.name) || /name:\s*['"]([^'"]+)['"]/.exec(text(input.script))?.[1] || text(input.scriptPath) || 'a script'} => ${ended}`
   if (use.tool.startsWith('mcp__inbox__')) return input.action === 'record' ? `Inbox record: ${text(input.title)} => ${ended}` : null
-  if (['Read', 'Grep', 'Glob', 'ToolSearch', 'TodoWrite'].includes(use.tool)) return null
+  // A subagent's report is told as its report, and Claude's todo list as the list.
+  if (['Read', 'Grep', 'Glob', 'ToolSearch', 'TodoWrite', 'TaskCreate', 'TaskUpdate', 'TaskList', 'TaskGet', 'SubagentHandback'].includes(use.tool)) return null
 
-  return `${use.tool}: ${JSON.stringify(input).slice(0, 160)}`
+  return depth.isFull ? `${use.tool}: ${JSON.stringify(input).slice(0, 400)} => ${ended || 'no output'}` : `${use.tool}: ${JSON.stringify(input).slice(0, 160)}`
+}
+
+/**
+ * What Claude wrote to the person in this turn before its reply, in order: each message of its own
+ * that has text, since the person's last message, but for the reply itself.
+ */
+export function saidOf(messages: Message[], reply: string) {
+  const from = messages.findLastIndex(message => message.role === 'user' && text(message.text) !== '' && list(message.toolResults).length === 0)
+  const said = messages
+    .slice(from + 1)
+    .filter(message => message.role === 'assistant' && text(message.text) !== '')
+    .map(message => text(message.text))
+
+  return said.at(-1) === reply.trim() ? said.slice(0, -1) : said
+}
+
+/**
+ * Claude's own todo list as the conversation last left it, one line an entry, and nothing when all
+ * of it is finished. One tool writes the list whole each time, and another keeps it entry by entry.
+ */
+export function todoOf(messages: Message[]) {
+  const uses = messages.flatMap(message => message.toolUses ?? [])
+  const entries = new Map<string, { title: string; status: string }>()
+  list(uses.findLast(use => use.tool === 'TodoWrite')?.input?.todos).forEach((todo, at) => {
+    const { content, status } = todo as { content?: unknown; status?: unknown }
+    entries.set(`w${at}`, { title: text(content), status: text(status) })
+  })
+  for (const use of uses) {
+    const input = use.input ?? {}
+    if (use.tool === 'TaskCreate') {
+      const id = text((use.result as { task?: { id?: unknown } } | undefined)?.task?.id)
+      if (id !== '') entries.set(id, { title: text(input.subject), status: 'pending' })
+    }
+    const entry = use.tool === 'TaskUpdate' ? entries.get(text(input.taskId)) : undefined
+    if (entry && input.status === 'deleted') entries.delete(text(input.taskId))
+    else if (entry) Object.assign(entry, { title: text(input.subject) || entry.title, status: text(input.status) || entry.status })
+  }
+  const kept = [...entries.values()].filter(entry => entry.title !== '')
+  if (kept.every(entry => entry.status === 'completed')) return []
+
+  return kept.slice(-TODOS_PER_READ).map(entry => `[${entry.status === 'completed' ? 'done' : entry.status === 'in_progress' ? 'in progress' : 'not started'}] ${entry.title}`)
+}
+
+/**
+ * A subagent as lines of a read: who it is, the latest of its tool calls, and its report once it has
+ * ended. A deeper read is also told the task it was given and what it wrote along the way.
+ */
+export function agentPart(agent: Subagent, lines: string[], report: string, said: string[] = []) {
+  const how = [agent.type, agent.isInWorkflow ? 'in a workflow' : '', agent.isBackground ? 'in the background' : '', agent.isDone ? 'ended' : 'still running'].filter(Boolean).join(', ')
+
+  return [
+    `"${agent.name}" (${how})`,
+    ...(depth.task > 0 && text(agent.task) !== '' ? [`  Its task: ${cut(flat(text(agent.task)), depth.task)}`] : []),
+    ...newest(lines, depth.agentCalls).map(line => `  ${line}`),
+    ...(depth.agentSaid > 0 && said.length > 0 ? [`  It wrote along the way: ${cut(said.map(flat).join(' / '), depth.agentSaid)}`] : []),
+    ...(report.trim() !== '' ? [`  Its report: ${cut(report.trim(), depth.report)}`] : []),
+  ].join('\n')
+}
+
+export const AGENT_RULES = `You audit the work of one helper: a subagent that Claude, a coding assistant, handed a task to. You are given the task, the helper's tool calls with how each ended, what it wrote along the way, and its report. Claude relies on that report, and the user who directs the work never reads it. You also keep the user's inbox, which lists what the conversation has left open. Reply with one JSON object and nothing else:
+
+{"open": [{"kind": "", "title": "", "from": "", "why": "", "close": "", "file": ""}]}
+
+open: what the user would be worse off not knowing about this helper's work, at most ${OPENS_PER_AGENT}, and most often none. A helper that did its task and reported it truly leaves nothing. Each has a kind:
+- "unverified": the report presents something as working, fixed, passing or true, and the tool calls do not show that it was run or checked. Name what was claimed and what was not run. At most one: several such claims go in one item.
+- "issue": something the tool calls show that the report hides or gets wrong, and that someone could act on: a check that failed while the report says it passed or leaves it out, an error it worked around without saying so, a change it made that its task did not ask for and its report does not mention, or a part of its task that it skipped while its report reads as if all of it was done.
+Do not open: what the tool calls bear out; a problem the report states plainly, which Claude has read; a limit the helper explains and works within; anything an open item is already about, even in other words; a judgement of how well the report is written.
+Write every item for the user, who will read it several messages from now with none of this in mind, and who must be able to act from the item alone. Say the thing itself in plain words, and name the helper by what it was doing ("the subagent that ran the tests"), never by an id.
+- "title": one plain sentence that the user gets at a glance, most often 8 to 14 words and never more than 18: a whole sentence with its small words, never a compressed headline. An issue says what is wrong and where. An unverified item says what was not tried.
+- "from": where it comes from, written as Claude in the first person with a short quote, like: A subagent I started to run the tests reported: "all tests pass".
+- "why": three to five sentences. What this is about, what is at stake, and the exact names, paths, commands and numbers.
+- "close": what would settle it, concretely.
+- "file": the absolute path it is about, if one.`
+
+/** What the audit of one subagent is asked: the inbox, then the subagent's task, its tool calls, what it wrote and its report. */
+export function agentAsk(ledger: Ledger, agent: Subagent, lines: string[], said: string[], report: string) {
+  return [
+    inboxLines(ledger),
+    `THE HELPER\n"${agent.name}" (${[agent.type, agent.isInWorkflow ? 'in a workflow' : ''].filter(Boolean).join(', ')})`,
+    `THE TASK CLAUDE GAVE IT\n${cut(text(agent.task), depth.message) || 'Not kept.'}`,
+    `WHAT IT DID\n${newest(lines).join('\n') || 'It called no tools that change anything.'}`,
+    ...(said.length > 0 ? [`WHAT IT WROTE ALONG THE WAY\n${cut(said.join('\n\n'), depth.said)}`] : []),
+    `ITS REPORT\n${cut(report, depth.reply) || 'It gave none.'}`,
+  ].join('\n\n')
 }
 
 /** A tool call as a hook on it is handed it, with how it ended: the call's own fields, without the ones the engine adds to every call. */
@@ -163,7 +323,7 @@ export function useOf(call: Record<string, unknown>, output: string): Use {
 }
 
 /** The latest of a turn's tool calls when there are many, under a line that says how many were left out. */
-export function newest(lines: string[], most = 80) {
+export function newest(lines: string[], most = depth.calls) {
   return lines.length <= most ? lines : [`[${lines.length - most} earlier tool calls left out]`, ...lines.slice(-most)]
 }
 
@@ -180,7 +340,7 @@ export function toolLines(messages: Message[], cwd = '') {
     .flatMap(use => toolLine(use, cwd) ?? [])
 }
 
-export function didLines(messages: Message[], most = 80, cwd = '') {
+export function didLines(messages: Message[], most = depth.calls, cwd = '') {
   return newest(toolLines(messages, cwd), most)
 }
 
@@ -190,8 +350,11 @@ export function closedByClaude(ledger: Ledger) {
   return ledger.items.filter(item => item.status === 'done' && item.closedBy === 'claude' && item.closedTurn === ledger.turn)
 }
 
-export function replyAsk(ledger: Ledger, asked: string[], message: string, isNotice: boolean, did: string[], reply: string) {
+export function replyAsk(ledger: Ledger, asked: string[], message: string, isNotice: boolean, did: string[], reply: string, beside: Beside = {}) {
   const closed = closedByClaude(ledger).map(item => `${item.id} ${item.title}. To close: ${item.close} ${item.reason ?? ''}`)
+  const agents = beside.agents ?? []
+  const shown = agents.length <= depth.agents ? agents : [`[${agents.length - depth.agents} earlier subagents left out]`, ...agents.slice(-depth.agents)]
+  const said = (beside.said ?? []).join('\n\n')
 
   return [
     inboxLines(ledger, asked),
@@ -203,9 +366,12 @@ export function replyAsk(ledger: Ledger, asked: string[], message: string, isNot
         .map(item => item.title)
         .join('\n') || 'none'
     }`,
-    `${isNotice ? 'THE NOTICE THAT STARTED THIS TURN (from the system, not the user)' : "THE USER'S MESSAGE"}\n${cut(message, 4000) || 'None: the turn went on without a new message.'}`,
+    `${isNotice ? 'THE NOTICE THAT STARTED THIS TURN (from the system, not the user)' : "THE USER'S MESSAGE"}\n${cut(message, depth.message) || 'None: the turn went on without a new message.'}`,
     `WHAT CLAUDE DID\n${did.join('\n') || 'It called no tools that change anything.'}`,
-    `CLAUDE'S REPLY\n${cut(reply, 9000)}`,
+    ...(shown.length > 0 ? [`WHAT ITS SUBAGENTS DID\n${shown.join('\n')}`] : []),
+    ...(beside.todo && beside.todo.length > 0 ? [`CLAUDE'S OWN TODO LIST\n${beside.todo.join('\n')}`] : []),
+    ...(said !== '' ? [`WHAT CLAUDE SAID WHILE WORKING\n${cut(said, depth.said)}`] : []),
+    `CLAUDE'S REPLY\n${cut(reply, depth.reply)}`,
   ].join('\n\n')
 }
 
@@ -317,7 +483,7 @@ export function readReply(ledger: Ledger, reply: string): ReplyRead | null {
     closed,
     missed: ids(said.missed).filter(id => !settled.has(id)),
     unsettled: ids(said.unsettled).filter(id => !settled.has(id)),
-    unsure: unsure.slice(0, FORKS_PER_REPLY),
+    unsure: unsure.slice(0, depth.forks),
     reopened,
     updated,
     open: kept.slice(0, OPENS_PER_REPLY),
@@ -412,6 +578,26 @@ export function replyEvents(ledger: Ledger, said: ReplyRead, at: number) {
 }
 
 /** What the fork said about one item: whether it is done, and the evidence. */
+/** What the audit of a subagent said, kept to what it may open: issues and untested claims, within its cap. */
+export function readAgent(reply: string): NewItem[] {
+  const fresh = list(jsonOf(reply)?.open)
+    .flatMap(one => newItem(one) ?? [])
+    .filter(item => item.kind === 'issue' || item.kind === 'unverified')
+
+  return fresh.filter((item, at) => item.kind !== 'unverified' || fresh.findIndex(other => other.kind === 'unverified') === at).slice(0, OPENS_PER_AGENT)
+}
+
+/**
+ * What the audit of a subagent found, as events: its new items, less any the person dropped before
+ * or the inbox already lists, and no more of them than `room`.
+ */
+export function agentEvents(ledger: Ledger, found: NewItem[], at: number, room: number) {
+  const { made, push } = builder(ledger)
+  for (const fields of found) if (made.events.length < room && !isDropped(made.now, fields.title) && !isListed(made.now, fields.title)) push(opened(made.now, at, 'audit', fields))
+
+  return made.events
+}
+
 export function readFork(reply: string) {
   const said = jsonOf(reply)
 

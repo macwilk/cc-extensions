@@ -133,8 +133,12 @@ export type View = {
   tick: number
 }
 
-/** The audit of a reply that the end of a turn asked for and that has not finished: the turn, its reply, the prompts it answered, and the tool calls made in it. */
-export type Pending = { id: string; answer: string; turn: { text: string; isNotice: boolean; asked: string[] }[]; did?: string[] }
+/**
+ * The audit of a reply that the end of a turn asked for and that has not finished: the turn, its
+ * reply, the prompts it answered, and the tool calls made in it. With them, when the turn had any:
+ * what Claude wrote before the reply, what its subagents did, and its todo list as the turn ended.
+ */
+export type Pending = { id: string; answer: string; turn: { text: string; isNotice: boolean; asked: string[] }[]; did?: string[]; said?: string[]; agents?: string[]; todo?: string[] }
 
 declare module 'claude-code' {
   interface PluginState {

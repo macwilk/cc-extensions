@@ -19,12 +19,14 @@ const CHECKS = [
 
 /**
  * The command as a check's name, or null when it is not one. A command joined to another by a pipe,
- * `&&`, `||` or `;` is not one either: its exit status is then not the check's own.
+ * `&&`, `||` or `;` is not one either: its exit status is then not the check's own. Moving to a
+ * folder first is the one exception, since the status is still the check's.
  */
 export function checkOf(command: string) {
   const line = command.trim().replace(/\s+/g, ' ')
-  if (/[|;]|&&/.test(line.replace(/2>&1/g, ''))) return null
-  const run = line.replace(/^(cd \S+ )?/, '').replace(/^([A-Z_]+=\S+ )+/, '')
+  const inPlace = line.replace(/^(cd \S+ ?(&&|;) ?)+/, '')
+  if (/[|;]|&&/.test(inPlace.replace(/2>&1/g, ''))) return null
+  const run = inPlace.replace(/^(cd \S+ )?/, '').replace(/^([A-Z_]+=\S+ )+/, '')
 
   return CHECKS.some(check => check.test(run)) ? line : null
 }

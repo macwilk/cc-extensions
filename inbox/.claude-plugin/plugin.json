@@ -7,11 +7,12 @@
   "license": "GPL-3.0-or-later",
   "types": "./types/index.d.ts",
   "userConfig": {
-    "useHaiku": {
-      "type": "boolean",
-      "title": "Read with Haiku",
-      "description": "The inbox reads each prompt and each reply with a model. On, it uses Haiku, which costs less and misses more. Off, it uses Sonnet.",
-      "default": false
+    "depth": {
+      "type": "string",
+      "title": "Depth",
+      "description": "How much of each turn the inbox reads. Light reads with Haiku: it costs less and misses more. Thorough reads far more of what Claude ran, changed and wrote: it costs more and misses less. Exhaustive also checks every subagent's report against what that subagent ran, with one more model call for each subagent.",
+      "options": ["Light", "Balanced", "Thorough", "Exhaustive"],
+      "default": "Balanced"
     }
   }
 }

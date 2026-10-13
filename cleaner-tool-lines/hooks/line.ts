@@ -23,9 +23,9 @@ function onOneLine(text: string): string {
   return text.replace(/\s+/g, ' ').trim()
 }
 
-type Subject = { text: string; isPath: boolean }
+export type Subject = { text: string; isPath: boolean }
 
-function subjectOf(input: unknown): Subject {
+export function subjectOf(input: unknown): Subject {
   if (!isRecord(input)) return { text: '', isPath: false }
   for (const field of SUBJECT_FIELDS) {
     const value = input[field]
@@ -65,7 +65,7 @@ export function cellsIn(text: string): number {
 }
 
 // A path says most at its end, where the file's name is. Anything else says most at its start.
-function cut({ text, isPath }: Subject, room: number): string {
+export function cut({ text, isPath }: Subject, room: number): string {
   if (cellsIn(text) <= room) return text
   const characters = isPath ? Array.from(text).reverse() : Array.from(text)
   let kept = ''

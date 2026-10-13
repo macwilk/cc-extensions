@@ -19,10 +19,17 @@ run `/reload-plugins` afterward.
 
 ## cleaner-tool-lines
 
-Draws each tool call as one line, so the conversation reads straight through. Click a line to open
-the call.
+Folds the tool calls that Claude makes in a row into one line, so the conversation reads straight
+through. Click the line to list its calls, and click a call to open it.
 
-![Claude Code fixes a failing test with five tool calls, each drawn as one line. The pointer opens the failed test run and then the edit.](media/cleaner-tool-lines.gif)
+<p>
+  <img src="media/cleaner-tool-lines-default.gif" alt="Claude Code fixes a failing test with four tool calls, folded into one line that names the call that is running. The pointer opens the line to its calls, and then opens the edit." width="32%">
+  <img src="media/cleaner-tool-lines-counts.gif" alt="The same task with the running call not shown: the one line counts the calls by tool while they run." width="32%">
+  <img src="media/cleaner-tool-lines-lines.gif" alt="The same task with collapsing off: each of the four tool calls has its own line. The pointer opens the edit." width="32%">
+</p>
+
+From left to right: the default, **Show the running tool call** turned off, and **Collapse tool
+calls** turned off.
 
 ```sh
 claude plugin install cleaner-tool-lines@cc-extensions

@@ -8,7 +8,14 @@ Code terminal transcript with one line, so the conversation reads straight throu
 ● ▸ tool_call: Bash(npm test) - error
 ```
 
-![Claude Code fixes a failing test with five tool calls, each drawn as one line. The pointer opens the failed test run and then the edit.](../media/cleaner-tool-lines.gif)
+<p>
+  <img src="../media/cleaner-tool-lines-default.gif" alt="Claude Code fixes a failing test with four tool calls, folded into one line that names the call that is running. The pointer opens the line to its calls, and then opens the edit." width="32%">
+  <img src="../media/cleaner-tool-lines-counts.gif" alt="The same task with the running call not shown: the one line counts the calls by tool while they run." width="32%">
+  <img src="../media/cleaner-tool-lines-lines.gif" alt="The same task with collapsing off: each of the four tool calls has its own line. The pointer opens the edit." width="32%">
+</p>
+
+From left to right: the default, **Show the running tool call** turned off, and **Collapse tool
+calls** turned off. The [settings](#choose-how-much-a-run-shows) are described below.
 
 The dot shows how the call stands:
 
@@ -27,6 +34,32 @@ In the full transcript (<kbd>Control+O</kbd>) and under `claude --verbose`, Clau
 tool call itself.
 
 The mod takes its colors from your Claude Code theme and needs no other mod.
+
+## Choose how much a run shows
+
+Claude often makes several tool calls in a row before it writes again. The mod folds such a run into
+one line, whichever tools the calls use. While Claude is still making calls, the line shows the
+latest one:
+
+```text
+● ▸ 4 tool_calls: Edit(…/src/app/main.py)
+```
+
+When Claude writes again, when a prompt that you typed while it worked reaches it, or when the turn
+ends, the line counts the calls by tool:
+
+```text
+● ▸ 6 tool_calls: 3 Bash, 1 Write, 1 Edit, 1 mcp__inbox__inbox - 1 failed
+```
+
+Click the line of a run to list its calls, each on a line that you can open. Click the line again to
+fold the run. A call with no other call next to it keeps its own line.
+
+Two settings change this. To set one, run `/config` and search for its name:
+
+- **Collapse tool calls:** turn it off to give every call its own line.
+- **Show the running tool call:** turn it off to have the line count the calls by tool while Claude
+  is still making them, too.
 
 ## Before you begin
 

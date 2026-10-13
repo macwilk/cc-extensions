@@ -5,5 +5,19 @@
     "name": "macwilk"
   },
   "license": "GPL-3.0-or-later",
-  "types": "./types/index.d.ts"
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "collapse": {
+      "type": "boolean",
+      "title": "Collapse tool calls",
+      "description": "Fold the tool calls Claude makes in a row into one line that counts them by tool. Click the line to list them. Off, every call has its own line.",
+      "default": true
+    },
+    "showRunning": {
+      "type": "boolean",
+      "title": "Show the running tool call",
+      "description": "While Claude is still making calls, the collapsed line shows the latest one. Off, it shows the count alone. Has no effect unless tool calls are collapsed.",
+      "default": true
+    }
+  }
 }

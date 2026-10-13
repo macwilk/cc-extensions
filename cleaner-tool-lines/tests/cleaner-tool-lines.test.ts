@@ -459,6 +459,450 @@ test('covers nothing where every run is drawn expanded, which Claude Code neithe
   await prompt.redraw({ text: 'find the costs', origin: { kind: 'composer' }, isExpanded: false })
 })
 
+// MARK: Sprees
+
+type RunCall = { tool_use_id: string; tool: string; input: unknown; isRunning: boolean; isErrored: boolean; isInterrupted: boolean }
+type Chunk = { kind: 'tool'; index: number; id: string; name: string } | { kind: 'text' | 'thinking'; index: number; text: string }
+type Made = { tool_use_id: string; tool: string; input: unknown; isErrored: boolean; output?: unknown }
+
+const DONE = { isRunning: false, isErrored: false, isInterrupted: false }
+const LS = { ...BASH, tool_use_id: 'toolu_spree_ls', input: { command: 'ls' } }
+const TESTS = { ...BASH, tool_use_id: 'toolu_spree_tests', input: { command: 'npm test' }, isErrored: true, output: 'Exit code 1' }
+const EDIT = { ...DONE, tool_use_id: 'toolu_spree_edit', tool: 'Edit', input: { file_path: '/repo/app.ts' }, output: { filePath: '/repo/app.ts' } }
+const MCP = { ...DONE, tool_use_id: 'toolu_spree_mcp', tool: 'mcp__inbox__inbox', input: { action: 'list' }, output: { text: 'nothing open' } }
+const NOTES = { ...READ, tool_use_id: 'toolu_spree_notes' }
+const RUN_OF_THREE = {
+  calls: [
+    { ...DONE, tool_use_id: 'toolu_ls', tool: 'Bash', input: { command: 'ls' } },
+    { ...DONE, tool_use_id: 'toolu_test', tool: 'Bash', input: { command: 'npm test' }, isErrored: true },
+    { ...DONE, tool_use_id: READ.tool_use_id, tool: 'Read', input: READ.input },
+  ] as RunCall[],
+  isActive: false,
+  isExpanded: false,
+}
+
+const begins = (row: { tool_use_id: string; tool: string }): Chunk => ({ kind: 'tool', index: 0, id: row.tool_use_id, name: row.tool })
+const says = (text: string): Chunk => ({ kind: 'text', index: 0, text })
+const thinks = (text: string): Chunk => ({ kind: 'thinking', index: 0, text })
+
+function mountRunOf($: Engine, props: typeof RUN_OF_THREE) {
+  return $.ui.mount({ plugin: 'cleaner-tool-lines', surface: 'terminal', component: 'ToolGroup', requestId: 'run', props, viewport: WIDE })
+}
+
+// Stands for the model and for the tools. Each request of a turn streams the next list of chunks.
+// A call made with `holdOpen` runs until the test calls `settle`, and `started` resolves once it runs.
+function claudeWorks(on: On, responses: Chunk[][]): { settle: () => void; started: Promise<void> } {
+  const waiting = [...responses]
+  const held = { settle: () => {}, start: () => {} }
+  const started = new Promise<void>(resolve => (held.start = resolve))
+  on('prompt.submit', async ($, e) => ({ text: e.text }))
+  on('turn.step', async function* (_$, e) {
+    for (const chunk of waiting.shift() ?? []) yield chunk
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'tool_use', usage: null }
+  })
+  on('tool.call', async ($, e) => {
+    const asked = e as { failed?: boolean; holdOpen?: boolean }
+    if (asked.holdOpen === true) {
+      held.start()
+      await new Promise<void>(resolve => (held.settle = resolve))
+    }
+    return asked.failed === true ? { result: 'Exit code 1', text: 'Exit code 1', isError: true } : { result: { ok: true }, text: 'ok' }
+  })
+  return { settle: () => held.settle(), started }
+}
+
+// One request of a turn, read to its end as Claude Code reads it.
+async function request($: Engine, index: number, agentId?: string) {
+  const step = { turnId: 'turn', index, model: 'claude', messageCount: 1 }
+  for await (const chunk of $.turn.step(agentId === undefined ? step : { ...step, agentId })) void chunk
+}
+
+// Claude Code runs a call that the model made. `failed` and `holdOpen` are read by the stand-in above.
+function runCall($: Engine, made: Made, more: { holdOpen?: boolean; agentId?: string } = {}) {
+  const call = { tool: made.tool, tool_use_id: made.tool_use_id, ...(made.input as Record<string, unknown>), failed: made.isErrored, ...more }
+  return $.tool.call(call as Parameters<Engine['tool']['call']>[0])
+}
+
+async function dotOf(ui: Mounted): Promise<unknown> {
+  return elementsOf(await ui.drawn(), element => element.type === 'Text' && textOf(element) === '● ')[0]?.props?.color
+}
+
+// A prompt typed while Claude works is drawn between the calls made before it arrived and the calls
+// made after. One line that counted them all would stand above the prompt and count what is below it.
+test('a prompt typed while Claude works ends the spree under way, so the calls after it fold apart', { options: { showRunning: false } }, async ($, on) => {
+  drawEngineRows(on)
+  claudeWorks(on, [[begins(LS)], [begins(EDIT)], [begins(TESTS)], [begins(NOTES)]])
+  for (const index of [0, 1]) await request($, index)
+  // Submitted while the turn runs, the prompt carries the turn's id and goes out with its next request.
+  await $.prompt.submit({ text: 'also run the tests', wait: false, origin: { kind: 'composer' }, turnId: 'turn' } as never)
+  for (const index of [2, 3]) await request($, index)
+  const rows = [await mountRow($, LS), await mountRow($, EDIT), await mountRow($, TESTS), await mountRow($, NOTES)]
+  for (const made of [LS, EDIT, TESTS, NOTES]) await runCall($, made)
+
+  expect(await lineOf(rows[0] as Mounted)).toBe('▸ 2 tool_calls: 1 Bash, 1 Edit')
+  expect(await lineOf(rows[2] as Mounted)).toBe('▸ 2 tool_calls: 1 Bash, 1 Read - 1 failed')
+})
+
+// Claude Code's hint to send a long command to the background is a row of its own under the call.
+test('leaves out the run-in-background hint under a folded spree, and keeps it under a call with its own line', { options: { showRunning: true } }, async ($, on) => {
+  // Beneath the mod, Claude Code draws the hint it is handed, and nothing for one that is empty.
+  on('ui.render', async ($, e) => $.ui.resolve(e).Text({ children: [e.component === 'ToolProgress' ? e.props.hint : ENGINE_ROW] }))
+  claudeWorks(on, [[begins(LS)], [begins(EDIT)]])
+  const hintOf = (made: Made) => $.ui.mount({ plugin: 'cleaner-tool-lines', surface: 'terminal', component: 'ToolProgress', requestId: `hint-${made.tool_use_id}`, props: { tool_use_id: made.tool_use_id, kind: 'background_hint', hint: '(ctrl+b to run in background)' }, viewport: WIDE })
+  await request($, 0)
+  await mountRow($, LS)
+  const alone = await hintOf(LS)
+
+  expect(textOf(await alone.drawn())).toBe('(ctrl+b to run in background)')
+
+  await request($, 1)
+  await mountRow($, EDIT)
+
+  expect(textOf(await (await hintOf(EDIT)).drawn())).toBe('')
+})
+
+test('draws a spree as one line on the row of its first call, whatever tools made the calls',{ options: { showRunning: false } }, async ($, on) => {
+  drawEngineRows(on)
+  claudeWorks(on, [[begins(LS)], [begins(EDIT)], [begins(MCP)]])
+  for (const index of [0, 1, 2]) await request($, index)
+  const first = await mountRow($, LS)
+  const second = await mountRow($, EDIT)
+  const third = await mountRow($, MCP)
+  const result = await mountResult($, EDIT)
+  for (const made of [LS, EDIT, MCP]) await runCall($, made)
+
+  expect(await lineOf(first)).toBe('▸ 3 tool_calls: 1 Bash, 1 Edit, 1 mcp__inbox__inbox')
+  expect(await dotOf(first)).toBe('success')
+  expect(textOf(await second.drawn())).toBe('')
+  expect(textOf(await third.drawn())).toBe('')
+  expect(textOf(await result.drawn())).toBe('')
+})
+
+// Every tool row of the transcript is drawn again when one row asks for all of them, which a long
+// conversation feels. A call starting or ending draws the rows of its own spree and no others.
+test('folds a spree without asking for the whole transcript to be drawn again', { options: { showRunning: false } }, async ($, on) => {
+  let asked = 0
+  on('ui.invalidate', async ($, e, next) => {
+    asked += 1
+    return next(e)
+  })
+  claudeWorks(on, [[begins(LS), begins(EDIT)], [says('Done.')]])
+  await request($, 0)
+  const first = await mountRow($, LS)
+  await mountRow($, EDIT)
+  for (const made of [LS, EDIT]) await runCall($, made)
+  await request($, 1)
+
+  expect(await lineOf(first)).toBe('▸ 2 tool_calls: 1 Bash, 1 Edit')
+  expect(asked).toBe(0)
+})
+
+test('a press on the line of a spree lists its calls, set in under it, and a second press folds them away', { options: { showRunning: false } }, async ($, on) => {
+  claudeWorks(on, [[begins(LS), begins(EDIT)]])
+  await request($, 0)
+  const first = await mountRow($, LS)
+  const second = await mountRow($, EDIT)
+  for (const made of [LS, EDIT]) await runCall($, made)
+
+  await first.press({ key: 'spree' })
+  expect(unfilled(textOf(await first.drawn()))).toBe('● ▾ 2 tool_calls● ▸ tool_call: Bash(ls)')
+  expect(await lineOf(second)).toBe('▸ tool_call: Edit(/repo/app.ts)')
+  expect(elementsOf(await second.drawn(), isBox)[0]?.props?.marginLeft).toBe(4)
+
+  await first.press({ key: 'spree' })
+  expect(await lineOf(first)).toBe('▸ 2 tool_calls: 1 Bash, 1 Edit')
+  expect(textOf(await second.drawn())).toBe('')
+})
+
+test('the line of a spree counts the calls that failed, and its dot is red for them', { options: { showRunning: false } }, async ($, on) => {
+  claudeWorks(on, [[begins(LS), begins(TESTS)]])
+  await request($, 0)
+  const first = await mountRow($, LS)
+  await mountRow($, TESTS)
+  for (const made of [LS, TESTS]) await runCall($, made)
+
+  expect(await lineOf(first)).toBe('▸ 2 tool_calls: 2 Bash - 1 failed')
+  expect(await dotOf(first)).toBe('error')
+})
+
+test('the dot of a spree is yellow while a call of it runs, and the line counts the call from its start', { options: { showRunning: false } }, async ($, on) => {
+  const work = claudeWorks(on, [[begins(LS), begins(EDIT)]])
+  await request($, 0)
+  const first = await mountRow($, LS)
+  await runCall($, LS)
+  expect(await lineOf(first)).toBe('▸ tool_call: Bash(ls)')
+
+  const running = runCall($, EDIT, { holdOpen: true })
+  await work.started
+  expect(await lineOf(first)).toBe('▸ 2 tool_calls: 1 Bash, 1 Edit')
+  expect(await dotOf(first)).toBe('warning')
+
+  work.settle()
+  await running
+  expect(await dotOf(first)).toBe('success')
+})
+
+test('cuts the count by tool so the line of a spree fills one row and no more', { options: { showRunning: false } }, async ($, on) => {
+  const batch = { ...MCP, tool_use_id: 'toolu_spree_batch', tool: 'mcp__claude_ai_Claude_Docs__batch' }
+  claudeWorks(on, [[begins(LS), begins(MCP), begins(batch)]])
+  await request($, 0)
+  const first = await mountRow($, LS, NARROW)
+  for (const made of [LS, MCP, batch]) await runCall($, made)
+
+  const line = await buttonOf(first)
+  expect(line.length).toBe(56)
+  expect(line).toBe('▸ 3 tool_calls: 1 Bash, 1 mcp__inbox__inbox, 1 mcp__cla…')
+})
+
+test('a spree of one call is that call on its own line', { options: { showRunning: false } }, async ($, on) => {
+  claudeWorks(on, [[begins(LS)]])
+  await request($, 0)
+  const only = await mountRow($, LS)
+  await runCall($, LS)
+
+  expect(await lineOf(only)).toBe('▸ tool_call: Bash(ls)')
+})
+
+test('text from Claude ends a spree, so the calls after it fold apart from the calls before', { options: { showRunning: false } }, async ($, on) => {
+  claudeWorks(on, [[begins(LS), begins(EDIT)], [says('Now the tests.'), begins(TESTS), begins(NOTES)]])
+  await request($, 0)
+  const before = await mountRow($, LS)
+  for (const made of [LS, EDIT]) await runCall($, made)
+  await request($, 1)
+  const after = await mountRow($, TESTS)
+  for (const made of [TESTS, NOTES]) await runCall($, made)
+
+  expect(await lineOf(before)).toBe('▸ 2 tool_calls: 1 Bash, 1 Edit')
+  expect(await lineOf(after)).toBe('▸ 2 tool_calls: 1 Bash, 1 Read - 1 failed')
+})
+
+// Claude Code draws thinking that comes with text as a row of the reply, between the calls around it.
+test('a note of thinking that Claude Code draws ends a spree as text does', { options: { showRunning: false } }, async ($, on) => {
+  claudeWorks(on, [[begins(LS), begins(EDIT)], [thinks(''), thinks('Checking the tests next.'), begins(TESTS), begins(NOTES)]])
+  await request($, 0)
+  const before = await mountRow($, LS)
+  for (const made of [LS, EDIT]) await runCall($, made)
+  await request($, 1)
+  const after = await mountRow($, TESTS)
+  for (const made of [TESTS, NOTES]) await runCall($, made)
+
+  expect(await lineOf(before)).toBe('▸ 2 tool_calls: 1 Bash, 1 Edit')
+  expect(await lineOf(after)).toBe('▸ 2 tool_calls: 1 Bash, 1 Read - 1 failed')
+})
+
+test('thinking that comes with no text, and white space, end no spree', { options: { showRunning: false } }, async ($, on) => {
+  claudeWorks(on, [[begins(LS)], [thinks(''), says('\n\n'), begins(EDIT)]])
+  await request($, 0)
+  await request($, 1)
+  const first = await mountRow($, LS)
+  for (const made of [LS, EDIT]) await runCall($, made)
+
+  expect(await lineOf(first)).toBe('▸ 2 tool_calls: 1 Bash, 1 Edit')
+})
+
+// A turn cut off mid-call may send no end, and its spree is still over.
+test('the first request of a turn starts a spree of its own', { options: { showRunning: false } }, async ($, on) => {
+  claudeWorks(on, [[begins(LS)], [begins(EDIT)]])
+  await request($, 0)
+  await request($, 0)
+  const first = await mountRow($, LS)
+  const second = await mountRow($, EDIT)
+  for (const made of [LS, EDIT]) await runCall($, made)
+
+  expect(await lineOf(first)).toBe('▸ tool_call: Bash(ls)')
+  expect(await lineOf(second)).toBe('▸ tool_call: Edit(/repo/app.ts)')
+})
+
+test('counts only the calls that ran or got a row, and draws the line on the first of them', { options: { showRunning: false } }, async ($, on) => {
+  claudeWorks(on, [[begins({ tool_use_id: 'toolu_spree_never_ran', tool: 'Bash' }), begins(LS), begins(EDIT)]])
+  await request($, 0)
+  const first = await mountRow($, LS)
+  for (const made of [LS, EDIT]) await runCall($, made)
+
+  expect(await lineOf(first)).toBe('▸ 2 tool_calls: 1 Bash, 1 Edit')
+})
+
+test("leaves a subagent's calls out of every spree", { options: { showRunning: false } }, async ($, on) => {
+  claudeWorks(on, [[begins(LS), begins(EDIT)]])
+  await request($, 0, 'agent')
+  const first = await mountRow($, LS)
+  const second = await mountRow($, EDIT)
+  for (const made of [LS, EDIT]) await runCall($, made, { agentId: 'agent' })
+
+  expect(await lineOf(first)).toBe('▸ tool_call: Bash(ls)')
+  expect(await lineOf(second)).toBe('▸ tool_call: Edit(/repo/app.ts)')
+})
+
+test('a run folds into the line of its spree with the calls around it', { options: { showRunning: false } }, async ($, on) => {
+  drawEngineRows(on)
+  claudeWorks(on, [[begins(EDIT), ...RUN_OF_THREE.calls.map(begins)]])
+  await request($, 0)
+  const first = await mountRow($, EDIT)
+  const group = await mountRunOf($, RUN_OF_THREE)
+  for (const made of [EDIT, ...RUN_OF_THREE.calls]) await runCall($, made)
+
+  expect(await lineOf(first)).toBe('▸ 4 tool_calls: 1 Edit, 2 Bash, 1 Read - 1 failed')
+  expect(textOf(await group.drawn())).toBe('')
+
+  await first.press({ key: 'spree' })
+  expect(textOf(await group.drawn())).toBe(ENGINE_ROW)
+})
+
+test('a run that opens a spree draws the line of the spree, over its own calls once the spree is open', { options: { showRunning: false } }, async ($, on) => {
+  drawEngineRows(on)
+  claudeWorks(on, [[...RUN_OF_THREE.calls.map(begins), begins(EDIT)]])
+  await request($, 0)
+  const group = await mountRunOf($, RUN_OF_THREE)
+  const last = await mountRow($, EDIT)
+  for (const made of [...RUN_OF_THREE.calls, EDIT]) await runCall($, made)
+
+  expect(await lineOf(group)).toBe('▸ 4 tool_calls: 2 Bash, 1 Read, 1 Edit - 1 failed')
+  expect(textOf(await last.drawn())).toBe('')
+
+  await group.press({ key: 'spree' })
+  expect(unfilled(textOf(await group.drawn()))).toBe('● ▾ 4 tool_calls - 1 failed' + ENGINE_ROW)
+  expect(await lineOf(last)).toBe('▸ tool_call: Edit(/repo/app.ts)')
+})
+
+// Claude Code shades a run it marks expanded and adds a row beneath it, folded into a spree or not.
+test('covers the shade of a run that a folded spree hides', { options: { showRunning: false } }, async ($, on) => {
+  drawEngineRows(on)
+  claudeWorks(on, [[begins(EDIT), ...RUN_OF_THREE.calls.map(begins)]])
+  await request($, 0)
+  await mountRow($, EDIT)
+  const group = await mountRunOf($, { ...RUN_OF_THREE, isExpanded: true })
+  const [cover] = elementsOf(await group.drawn(), isBox)
+
+  expect(cover?.props?.backgroundColor).toBe('ansi256()')
+  expect(cover?.props?.marginBottom).toBe(-1)
+  expect(textOf(cover)).toBe('')
+})
+
+test('names the latest call while Claude is still making calls, and counts them by tool once the turn is over',{ options: { showRunning: true } }, async ($, on) => {
+  on('turn.complete', async ($, e) => ({ text: e.answer }))
+  claudeWorks(on, [[begins(TESTS), begins(NOTES)]])
+  await request($, 0)
+  const first = await mountRow($, TESTS)
+  for (const made of [TESTS, NOTES]) await runCall($, made)
+
+  expect(await lineOf(first)).toBe('▸ 2 tool_calls: Read(/repo/notes.md)')
+  // The dot and the note are the latest call's, which did not fail.
+  expect(await dotOf(first)).toBe('success')
+
+  await $.turn.complete({ answer: '', durationMs: 10, isAborted: false, turnId: 'turn', reason: 'answer' })
+  expect(await lineOf(first)).toBe('▸ 2 tool_calls: 1 Bash, 1 Read - 1 failed')
+  expect(await dotOf(first)).toBe('error')
+})
+
+test('notes that the running call it names failed',{ options: { showRunning: true } }, async ($, on) => {
+  claudeWorks(on, [[begins(LS), begins(TESTS)]])
+  await request($, 0)
+  const first = await mountRow($, LS)
+  for (const made of [LS, TESTS]) await runCall($, made)
+
+  expect(await lineOf(first)).toBe('▸ 2 tool_calls: Bash(npm test) - error')
+  expect(await dotOf(first)).toBe('error')
+})
+
+test('counts a spree by tool as soon as Claude writes text after it, where it named the running call before',{ options: { showRunning: true } }, async ($, on) => {
+  claudeWorks(on, [[begins(LS), begins(EDIT)], [says('Both are done.')]])
+  await request($, 0)
+  const first = await mountRow($, LS)
+  for (const made of [LS, EDIT]) await runCall($, made)
+  expect(await lineOf(first)).toBe('▸ 2 tool_calls: Edit(/repo/app.ts)')
+
+  await request($, 1)
+  expect(await lineOf(first)).toBe('▸ 2 tool_calls: 1 Bash, 1 Edit')
+})
+
+// What a conversation hands a mod that is loaded into it: its rows, where thinking has no text, and
+// the form of its next request, where thinking is whole.
+const ROWS = [
+  { role: 'user', text: 'tidy the app', toolUses: [] },
+  { role: 'assistant', text: '', toolUses: [{ tool_use_id: LS.tool_use_id, tool: 'Bash', input: LS.input, text: 'app.ts' }] },
+  { role: 'user', text: '', toolUses: [] },
+  { role: 'assistant', text: '', toolUses: [{ tool_use_id: EDIT.tool_use_id, tool: 'Edit', input: EDIT.input, text: 'updated' }] },
+  { role: 'assistant', text: 'Tidied. Now the tests.', toolUses: [{ tool_use_id: TESTS.tool_use_id, tool: 'Bash', input: TESTS.input, text: 'Exit code 1', isError: true }] },
+  { role: 'assistant', text: '', toolUses: [] },
+  { role: 'assistant', text: '', toolUses: [{ tool_use_id: NOTES.tool_use_id, tool: 'Read', input: NOTES.input, text: 'notes' }] },
+]
+
+function holdConversation(on: On, thought: string) {
+  const request = [{ role: 'assistant', content: [{ type: 'thinking', thinking: thought }, { type: 'tool_use', id: NOTES.tool_use_id, name: 'Read', input: NOTES.input }] }]
+  on('session.messages', async ($, e) => ({ value: (e.as === 'api' ? request : ROWS) as never }))
+  on('session.start', async ($, e) => ({ cwd: e.cwd }))
+}
+
+const load = ($: Engine) => $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+
+test('folds the sprees of a conversation it is loaded into, read off its messages', { options: { showRunning: true } }, async ($, on) => {
+  holdConversation(on, '')
+  await load($)
+  const first = await mountRow($, LS)
+
+  // No other row has been drawn and no call has run, and none of these sprees is under way.
+  expect(await lineOf(first)).toBe('▸ 2 tool_calls: 1 Bash, 1 Edit')
+  expect(textOf(await (await mountRow($, EDIT)).drawn())).toBe('')
+  expect(await lineOf(await mountRow($, TESTS))).toBe('▸ 2 tool_calls: 1 Bash, 1 Read - 1 failed')
+})
+
+test('reads where a note of thinking split two sprees off the request form of the conversation', { options: { showRunning: false } }, async ($, on) => {
+  holdConversation(on, 'Reading the notes next.')
+  await load($)
+
+  expect(await lineOf(await mountRow($, TESTS))).toBe('▸ tool_call: Bash(npm test) - error')
+  expect(await lineOf(await mountRow($, NOTES))).toBe('▸ tool_call: Read(/repo/notes.md)')
+})
+
+// The request form holds a conversation only since its last compaction, so the mod keeps the splits it saw.
+test('keeps the sprees that a note of thinking split apart when it is loaded again', { options: { showRunning: false } }, async ($, on) => {
+  holdConversation(on, '')
+  claudeWorks(on, [[begins(TESTS)], [thinks('Reading the notes next.'), begins(NOTES)]])
+  await request($, 0)
+  await request($, 1)
+  await load($)
+
+  expect(await lineOf(await mountRow($, TESTS))).toBe('▸ tool_call: Bash(npm test) - error')
+  expect(await lineOf(await mountRow($, NOTES))).toBe('▸ tool_call: Read(/repo/notes.md)')
+})
+
+test('leaves the calls of a folded spree to Claude Code while the full transcript is open', { options: { showRunning: false } }, async ($, on) => {
+  drawEngineRows(on)
+  claudeWorks(on, [[begins(LS), begins(EDIT)]])
+  await request($, 0)
+  const prompt = await mountPrompt($, false)
+  await mountRow($, LS)
+  const second = await mountRow($, EDIT)
+  expect(textOf(await second.drawn())).toBe('')
+
+  await prompt.redraw({ text: 'find the costs', origin: { kind: 'composer' }, isExpanded: true })
+  expect(textOf(await second.drawn())).toBe(ENGINE_ROW)
+
+  await prompt.redraw({ text: 'find the costs', origin: { kind: 'composer' }, isExpanded: false })
+})
+
+test('with collapsing set off, every call keeps its line', { options: { collapse: false } }, async ($, on) => {
+  claudeWorks(on, [[begins(LS), begins(EDIT)]])
+  await request($, 0)
+  const first = await mountRow($, LS)
+  const second = await mountRow($, EDIT)
+  for (const made of [LS, EDIT]) await runCall($, made)
+
+  expect(await lineOf(first)).toBe('▸ tool_call: Bash(ls)')
+  expect(await lineOf(second)).toBe('▸ tool_call: Edit(/repo/app.ts)')
+})
+
+test('with nothing set, collapses a spree and names its running call', async ($, on) => {
+  claudeWorks(on, [[begins(LS), begins(EDIT)]])
+  await request($, 0)
+  const first = await mountRow($, LS)
+  const second = await mountRow($, EDIT)
+  for (const made of [LS, EDIT]) await runCall($, made)
+
+  expect(await lineOf(first)).toBe('▸ 2 tool_calls: Edit(/repo/app.ts)')
+  expect(textOf(await second.drawn())).toBe('')
+})
+
 // MARK: Views the mod stays out of
 
 test('leaves every tool row to Claude Code while the full transcript is open', async ($, on) => {

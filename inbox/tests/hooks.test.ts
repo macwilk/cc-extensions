@@ -439,6 +439,26 @@ test('an item from a prompt the person rewound past is kept and marked, and the 
 
 // A reload of the mod cancels the timer an audit waits on. What a turn's end asked for is kept in the
 // session's state, which a reload leaves alone, so the mod finds it there when it is loaded again.
+// A compaction raises Claude Code's count of turns. Quit and resumed, the conversation is counted
+// afresh and lower, which read as a rewind to its start and flagged every open item.
+test('a conversation that was compacted, quit and resumed is not taken for one that was rewound', async ($, on) => {
+  const item = { kind: 'issue', from: 'Claude', why: '', close: '', at: 5, by: 'audit', status: 'open' }
+  const log = [{ type: 'turn' }, { type: 'open', item: { ...item, id: 'i1', turn: 1, title: 'Demo scripts live only in a temp folder' } }, { type: 'turn' }, { type: 'open', item: { ...item, id: 'i2', turn: 2, title: 'Run shade relies on an undocumented color' } }]
+  const { book, clock, files, kept } = world(on, {}, { [LOG]: `${log.map(line => JSON.stringify({ at: 5, turn: 1, ...line })).join('\n')}\n`, '/home/me/.claude/inbox/conv-1.marks': 'toolu_a 1 1\ntoolu_b 2 6\n' })
+  // The resumed conversation holds two turns, where the last mark was written at a count of six.
+  kept.turns = 2
+  await start($)
+  await clock.settle()
+  await $.prompt.submit({ text: 'and the docs', wait: false, origin: { kind: 'composer' } })
+  await clock.advance(5)
+
+  expect(book().items.map(one => [one.id, one.isRewound ?? false])).toEqual([
+    ['i1', false],
+    ['i2', false],
+  ])
+  expect(files['/home/me/.claude/inbox/conv-1.marks']).toBe('toolu_a 1 -3\ntoolu_b 2 2\n')
+})
+
 test('an audit that a reload of the mod cut off runs when the mod is loaded again, and once', async ($, on) => {
   const left = { id: 't9', answer: 'Created notes.txt.', turn: [{ text: 'create notes.txt', isNotice: false, asked: [] }] }
   const { clock, kept } = world(on, { reply: '{}' }, {}, left)

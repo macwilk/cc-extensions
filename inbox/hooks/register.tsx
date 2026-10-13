@@ -8,7 +8,7 @@ import type { EngineInterface, Register, ThemeKey } from 'claude-code'
 import type { Check, Event, Item, Kind, Ledger, Pending, View } from '../types'
 import { SECTION_NAME, clip, draftOf, linesOf, nameOf, sayOf, sentOf, without, wrapped, type Decoration } from './capture'
 import { AGENT_SPEC, AGENT_TYPE, ASK_AGAIN_AFTER, CHECKS_AT_ONCE, HAND_BACK, RECEIVED, STOPPED, canCheck, checkAsk, checkBack, checkDismissed, checkLost, ranLine, sayOfCheck, stepsOf, withRan } from './checks'
-import { EMPTY, ageOf, apply, carriedTo, forkPoint, layoutOf, marksOf, needsYou, opened, progressOf, replay, rewoundTo, sectionsOf, type GoalBlock, type Section } from './ledger'
+import { EMPTY, ageOf, apply, carriedTo, forkPoint, layoutOf, marksOf, needsYou, opened, progressOf, rebased, replay, rewoundTo, sectionsOf, type GoalBlock, type Section } from './ledger'
 import { checkOf, failedCheck, leftQuestions } from './signals'
 import { TOOL_DESCRIPTION, TOOL_NAME, TOOL_SCHEMA, answerTool } from './tool'
 import { AGENT_OPENS_PER_PROMPT, AGENT_RULES, BY_REPLY, PROMPT_RULES, REPLY_RULES, agentAsk, agentEvents, agentPart, didLines, forkAsk, lastReplyOf, newest, promptAsk, promptEvents, readAgent, readAt, readFork, readPrompt, readReply, replyAsk, replyEvents, saidOf, todoOf, toolLine, toolLines, useOf, type Beside, type Message, type Subagent } from './workers'
@@ -287,6 +287,14 @@ async function restore($: EngineInterface) {
   await update($, ledgerAtom, () => replay(events))
   // State that outlived the start means the plugins were reloaded in a running session. A restart reloads them too.
   const isRestart = held.turn === 0 && held.items.length === 0
+  // Started again, the conversation is counted afresh, and lower than before where it was compacted:
+  // the marks are moved to that count, or the next prompt would read the drop as a rewind.
+  const marks = marksOf(log.marks)
+  const moved = isRestart ? rebased(marks, (await ledgerOf($)).turn, await $.session.turns()) : marks
+  if (moved !== marks) {
+    log.marks = moved.map(one => `${one.call} ${one.turn} ${one.turns}\n`).join('')
+    await $.fs.write(`${log.base}.marks`, log.marks)
+  }
   await record($, now =>
     now.items
       .filter(item => item.status === 'open' && (item.closesOn === 'reload' || (isRestart && item.closesOn === 'restart')))

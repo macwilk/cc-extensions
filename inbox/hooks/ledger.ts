@@ -189,6 +189,20 @@ export function rewoundTo(marks: { call: string; turn: number; turns: number }[]
 }
 
 /**
+ * The marks of a conversation that was started again, moved to the count of turns Claude Code gives
+ * it now. A compaction raises that count, and a conversation that is quit and resumed is counted
+ * afresh from what it still holds, so the count drops with nothing rewound. The newest mark is put
+ * at the count as it stands, less the prompts sent since that mark, and the others keep their
+ * distance from it. `prompts` is the inbox's own count of prompts. Marks the count is not behind stay.
+ */
+export function rebased(marks: { call: string; turn: number; turns: number }[], prompts: number, turns: number) {
+  const last = marks.at(-1)
+  const drop = last ? last.turns - (turns - Math.max(0, prompts - last.turn)) : 0
+
+  return drop > 0 ? marks.map(mark => ({ ...mark, turns: mark.turns - drop })) : marks
+}
+
+/**
  * Where a fork was made, among the marks of one log: the mark for the same count of turns as the
  * fork holds, when one of its tool calls is there too. Two turns can end on the same tool call, so
  * without that count the newest mark for the newest call the fork holds is taken.

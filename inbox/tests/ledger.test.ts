@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { EMPTY, KEPT_TURNS, ageOf, apply, carriedTo, forkPoint, goalOpened, isDropped, layoutOf, marksOf, opened, progressOf, replay, rewoundTo, sectionsOf } from '../hooks/ledger'
+import { EMPTY, KEPT_TURNS, ageOf, apply, carriedTo, forkPoint, goalOpened, isDropped, layoutOf, marksOf, opened, progressOf, rebased, replay, rewoundTo, sectionsOf } from '../hooks/ledger'
 import type { Event, Ledger } from '../types'
 
 const FINDING = { kind: 'issue' as const, title: 'Demo scripts live only in a temp folder', from: 'Claude', why: 'They are lost when it is cleaned.', close: 'Move them into the repo.' }
@@ -213,6 +213,25 @@ test('marks are read one to a line, and a line that is not a mark is skipped', a
     { call: 'toolu_a', turn: 1, turns: 2 },
     { call: 'toolu_b', turn: 2, turns: -1 },
   ])
+})
+
+// A compaction raises Claude Code's count of turns, and a conversation that is quit and resumed is
+// counted afresh from what it still holds: the count drops with nothing rewound.
+test('the marks of a conversation started again are moved to the count it has now, so that the drop is no rewind', async () => {
+  // Three prompts, a compaction and a fourth prompt, which left the count at 7. Resumed, the conversation counts 4.
+  const marks = marksOf('toolu_a 1 1\ntoolu_b 2 2\ntoolu_c 3 3\ntoolu_d 4 7\n')
+  const moved = rebased(marks, 4, 4)
+
+  expect(rewoundTo(marks, 4)).toMatchObject({ turn: 3 })
+  expect(moved.map(mark => mark.turns)).toEqual([-2, -1, 0, 4])
+  expect(rewoundTo(moved, 4)).toBe(null)
+  // A rewind of the last prompt, made after the resume, is still one.
+  expect(rewoundTo(moved, 3)).toMatchObject({ turn: 3 })
+  // A prompt whose turn never ended has no mark, and is in the count all the same.
+  expect(rebased(marks, 5, 5).map(mark => mark.turns)).toEqual([-2, -1, 0, 4])
+  // A count that did not drop moves nothing.
+  expect(rebased(marks.slice(0, 3), 3, 3)).toEqual(marks.slice(0, 3))
+  expect(rebased([], 0, 0)).toEqual([])
 })
 
 // After a rewind Claude Code counts fewer turns than the newest marks were written at.

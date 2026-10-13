@@ -138,14 +138,19 @@ function fromProject(path: string, cwd: string) {
   return cwd !== '' && path.startsWith(`${cwd}/`) ? path.slice(cwd.length + 1) : path
 }
 
-/** One tool call as a line: what was run or changed, and how it ended. Reading and searching are left out. */
+/**
+ * One tool call as a line: what was run or changed, and how it ended. Reading and searching are
+ * left out, and so is the inbox tool but for a finding it was given to record, which can be the
+ * very thing the person asked for.
+ */
 export function toolLine(use: Use, cwd = '') {
   const input = use.input ?? {}
   const ended = endOf(text(use.text))
   if (use.tool === 'Bash') return `Bash: ${text(input.command).split('\n').join(' ').slice(0, 600)} => ${ended || 'no output'}`
   if (use.tool === 'Edit' || use.tool === 'Write' || use.tool === 'NotebookEdit') return `${use.tool}: ${fromProject(text(input.file_path) || text(input.notebook_path), cwd)}`
   if (use.tool === 'Agent' || use.tool === 'Task') return `Agent: ${text(input.description)} => ${ended}`
-  if (['Read', 'Grep', 'Glob', 'ToolSearch', 'TodoWrite'].includes(use.tool) || use.tool.startsWith('mcp__inbox__')) return null
+  if (use.tool.startsWith('mcp__inbox__')) return input.action === 'record' ? `Inbox record: ${text(input.title)} => ${ended}` : null
+  if (['Read', 'Grep', 'Glob', 'ToolSearch', 'TodoWrite'].includes(use.tool)) return null
 
   return `${use.tool}: ${JSON.stringify(input).slice(0, 160)}`
 }

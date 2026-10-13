@@ -48,6 +48,16 @@ test('the tool lists what is open, closes with a reason, and records within its 
   expect(answerTool(ledger, { action: 'record', title: FINDING.title, why: FINDING.why }, 5, RECORDS_PER_TURN).events).toEqual([])
 })
 
+test('an ask of this turn to record a finding does not stand in the way of recording it', async () => {
+  const ask = { kind: 'ask' as const, title: `Record that ${FINDING.title}`, from: 'You', why: '', close: 'The finding is in the inbox.' }
+  const asked = ledgerOf(() => ({ type: 'turn' }), now => opened(now, 0, 'audit', ask))
+  const record = { action: 'record', kind: 'issue', title: FINDING.title, why: FINDING.why }
+
+  expect(answerTool(asked, record, 5, 0).events[0]).toMatchObject({ type: 'open', item: { kind: 'issue', title: FINDING.title } })
+  // An ask left open from an earlier turn still counts as the inbox listing it.
+  expect(answerTool(apply(asked, { type: 'turn' }), record, 5, 0).text).toBe('Not recorded: the inbox already lists this.')
+})
+
 // The prompt box holds an item's id and title alone: the rest is what Claude gets by the id.
 test('the tool hands over in full each item a message quotes, and names an id it does not know', async () => {
   const ledger = ledgerOf(now => opened(now, 0, 'audit', QUESTION))
@@ -375,6 +385,14 @@ test('what Claude did is told as the tool calls that change or run something, si
   // A call kept as it is made reads the same as one read back from the conversation.
   expect(toolLine(useOf({ tool: 'Bash', tool_use_id: 'u1', command: 'npm test' }, 'Exit code 1\n2 failed'))).toBe(lines[1])
   expect(toolLine(useOf({ tool: 'WebFetch', tool_use_id: 'u2', agentId: undefined, url: 'https://example.test' }, 'ok'))).toBe('WebFetch: {"url":"https://example.test"}')
+})
+
+test('a finding Claude records is told to the reply as something it did, and its other inbox calls are not', async () => {
+  const record = { tool: 'mcp__inbox__inbox', tool_use_id: 'u1', action: 'record', kind: 'issue', title: FINDING.title, why: FINDING.why }
+
+  expect(toolLine(useOf(record, 'Recorded as i5.'))).toBe(`Inbox record: ${FINDING.title} => Recorded as i5.`)
+  expect(toolLine(useOf(record, 'Not recorded: the inbox already lists this.'))).toBe(`Inbox record: ${FINDING.title} => Not recorded: the inbox already lists this.`)
+  for (const action of ['get', 'list', 'close']) expect(toolLine(useOf({ tool: 'mcp__inbox__inbox', tool_use_id: 'u2', action }, 'ok'))).toBe(null)
 })
 
 test('a reply that is not JSON is read as nothing', async () => {

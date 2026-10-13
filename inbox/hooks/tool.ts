@@ -101,7 +101,9 @@ export function answerTool(ledger: Ledger, call: Call, at: number, recorded: num
     const title = text(call.title)
     if (title === '' || text(call.why) === '') return { events: [], text: 'A record needs a title and a why.' }
     if (isDropped(ledger, title)) return { events: [], text: 'Not recorded: the user dropped this before. Do not record it again.' }
-    if (isListed(ledger, title)) return { events: [], text: 'Not recorded: the inbox already lists this.' }
+    // What the person asked for in this turn can be the record itself, and that ask is not a listing of it.
+    const others = { ...ledger, items: ledger.items.filter(item => item.kind !== 'ask' || item.turn !== ledger.turn) }
+    if (isListed(others, title)) return { events: [], text: 'Not recorded: the inbox already lists this.' }
     if (recorded >= RECORDS_PER_TURN) return { events: [], text: `Not recorded: ${RECORDS_PER_TURN} items were recorded since the user's last message. Tell the user about it in your reply.` }
     const event = opened(ledger, at, 'claude', {
       kind,

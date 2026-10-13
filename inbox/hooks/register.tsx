@@ -807,10 +807,11 @@ export const register: Register = (on, options) => {
   on('tool.call', async ($, e, next) => {
     const agent = (e as { agentId?: string }).agentId
     if (agent === undefined) {
-      // A call of Claude's own: kept for the reply's read, with how it ended.
+      // A call of Claude's own: kept for the reply's read, with how it ended. The inbox tool is
+      // answered by a hook of this mod, whose answer has no `text` and is its `result`.
       const answer = await next(e)
-      const said = answer as { text?: unknown; deny?: unknown }
-      const line = toolLine(useOf(e as unknown as Record<string, unknown>, String(said.text ?? said.deny ?? '')), seen.cwd)
+      const said = answer as { text?: unknown; deny?: unknown; result?: unknown }
+      const line = toolLine(useOf(e as unknown as Record<string, unknown>, String(said.text ?? said.deny ?? (typeof said.result === 'string' ? said.result : ''))), seen.cwd)
       if (line !== null) passes.did.push(line)
 
       return answer

@@ -722,15 +722,21 @@ test('counts only the calls that ran or got a row, and draws the line on the fir
   expect(await lineOf(first)).toBe('▸ 2 tool_calls: 1 Bash, 1 Edit')
 })
 
-test("leaves a subagent's calls out of every spree", { options: { showRunning: false } }, async ($, on) => {
-  claudeWorks(on, [[begins(LS), begins(EDIT)]])
+// A subagent's conversation is drawn with the same rows once the person opens it.
+test("folds a subagent's calls into a spree of their own, apart from the main conversation's", { options: { showRunning: false } }, async ($, on) => {
+  claudeWorks(on, [[begins(LS)], [begins(TESTS), begins(NOTES)], [begins(EDIT)]])
+  await request($, 0)
   await request($, 0, 'agent')
-  const first = await mountRow($, LS)
-  const second = await mountRow($, EDIT)
-  for (const made of [LS, EDIT]) await runCall($, made, { agentId: 'agent' })
+  await request($, 1)
+  const mine = await mountRow($, LS)
+  const theirs = await mountRow($, TESTS)
+  for (const made of [LS, EDIT]) await runCall($, made)
+  for (const made of [TESTS, NOTES]) await runCall($, made, { agentId: 'agent' })
+  await mountRow($, EDIT)
+  await mountRow($, NOTES)
 
-  expect(await lineOf(first)).toBe('▸ tool_call: Bash(ls)')
-  expect(await lineOf(second)).toBe('▸ tool_call: Edit(/repo/app.ts)')
+  expect(await lineOf(mine)).toBe('▸ 2 tool_calls: 1 Bash, 1 Edit')
+  expect(await lineOf(theirs)).toBe('▸ 2 tool_calls: 1 Bash, 1 Read - 1 failed')
 })
 
 test('a run folds into the line of its spree with the calls around it', { options: { showRunning: false } }, async ($, on) => {

@@ -105,8 +105,9 @@ export const register: Register = (on, options) => {
   const isShowingRunning = options.showRunning !== false
   const book = emptyBook()
 
-  // Whether the latest thing Claude Code drew of the response under way is a note of Claude's thinking.
-  let isAfterThought = false
+  // The conversations whose response under way last drew a note of Claude's thinking: the main one
+  // goes by '', and a subagent's by its id.
+  const afterThought = new Set<string>()
   // Whether the person has typed a prompt into the turn under way that Claude has not been sent yet.
   let hasTypedAhead = false
 
@@ -114,6 +115,11 @@ export const register: Register = (on, options) => {
     on('session.start', async ($, e, next) => {
       const splits = [...(await read($, thoughtSplitsSeen)), ...thoughtSplits(await $.session.messages({ as: 'api' }))]
       restore(book, await $.session.messages(), new Set(splits))
+      // A subagent's conversation is drawn with the same rows when the person opens it.
+      for (const agent of await $.agent.list().catch(() => [])) {
+        const rows = await $.session.messages({ agentId: agent.id }).catch(() => [])
+        if (Array.isArray(rows)) restore(book, rows, new Set(splits), agent.id)
+      }
       // The rows drawn while the conversation was read knew no spree.
       $.ui.invalidate('ui.render')
       return next(e)
@@ -127,29 +133,31 @@ export const register: Register = (on, options) => {
 
     // The response says where a spree begins and ends before any row is drawn: each call as the
     // model begins it, and what Claude Code draws between two sprees, which is Claude's text and any
-    // thinking that comes with text.
+    // thinking that comes with text. A subagent's responses do the same for its own conversation,
+    // whose sprees are kept apart from the main one's.
     on('turn.step', async function* ($, e, next) {
-      if (e.agentId !== undefined) return yield* next(e)
+      const loop = e.agentId ?? ''
       // A prompt typed while Claude works goes out with the turn's next request, and Claude Code
       // draws it there, between the calls made before it and the calls made after. So the spree
       // before it has ended, as at any text.
-      if (e.index === 0 || hasTypedAhead) await redraw($, end(book))
-      hasTypedAhead = false
+      if (e.index === 0 || (loop === '' && hasTypedAhead)) await redraw($, end(book, loop))
+      if (loop === '') hasTypedAhead = false
       for await (const chunk of next(e)) {
         if (chunk.kind === 'tool') {
-          const first = join(book, chunk.id)
-          if (isAfterThought && first === chunk.id) await update($, thoughtSplitsSeen, seen => [...seen, chunk.id])
-          isAfterThought = false
+          const first = join(book, chunk.id, loop)
+          if (afterThought.has(loop) && first === chunk.id) await update($, thoughtSplitsSeen, seen => [...seen, chunk.id])
+          afterThought.delete(loop)
         } else if ((chunk.kind === 'text' || chunk.kind === 'thinking') && chunk.text.trim() !== '') {
-          isAfterThought = chunk.kind === 'thinking'
-          await redraw($, end(book))
+          if (chunk.kind === 'thinking') afterThought.add(loop)
+          else afterThought.delete(loop)
+          await redraw($, end(book, loop))
         }
         yield chunk
       }
     })
 
     on('turn.complete', async ($, e, next) => {
-      if (e.agentId === undefined) await redraw($, end(book))
+      await redraw($, end(book, e.agentId ?? ''))
       return next(e)
     })
 
@@ -157,7 +165,6 @@ export const register: Register = (on, options) => {
     // it ends, which are the two times the line of its spree has something new to say.
     on('tool.call', async ($, e, next) => {
       const { tool, tool_use_id: id, agentId, requestMeta, ...input } = e
-      if (agentId !== undefined) return next(e)
       const first = book.spreeOf.get(id)?.calls[0]
       note(book, id, { tool, input, isRunning: true, isErrored: false, isInterrupted: false })
       await redraw($, first)

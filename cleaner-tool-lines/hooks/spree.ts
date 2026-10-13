@@ -11,29 +11,33 @@ export type Spree = { calls: string[]; isLive: boolean }
 /** What the one line of a spree says of a call that another row draws. */
 export type Mark = { tool: string; subject: Subject; state: 'running' | 'done' | 'failed'; note: string | undefined }
 
-/** Every spree of the conversation by the calls in it, how each call stands, and the spree still under way. */
-export type Book = { spreeOf: Map<string, Spree>; markOf: Map<string, Mark>; current?: Spree }
+/**
+ * Every spree by the calls in it, how each call stands, and the spree still under way in each
+ * conversation: the main one goes by '', and a subagent's, which the person can open, by its id.
+ */
+export type Book = { spreeOf: Map<string, Spree>; markOf: Map<string, Mark>; current: Map<string, Spree> }
 
 export function emptyBook(): Book {
-  return { spreeOf: new Map(), markOf: new Map() }
+  return { spreeOf: new Map(), markOf: new Map(), current: new Map() }
 }
 
-/** Adds a new call to the spree under way, starting one where none is. Returns the first call of the spree it changed. */
-export function join(book: Book, id: string): string | undefined {
+/** Adds a new call to the spree under way in its conversation, starting one where none is. Returns the first call of the spree it changed. */
+export function join(book: Book, id: string, loop = ''): string | undefined {
   if (book.spreeOf.has(id)) return undefined
-  book.current ??= { calls: [], isLive: true }
-  book.current.calls.push(id)
-  book.current.isLive = true
-  book.spreeOf.set(id, book.current)
-  return book.current.calls[0]
+  const spree = book.current.get(loop) ?? { calls: [], isLive: true }
+  book.current.set(loop, spree)
+  spree.calls.push(id)
+  spree.isLive = true
+  book.spreeOf.set(id, spree)
+  return spree.calls[0]
 }
 
-/** Ends the spree under way, so the next call starts another. Returns the first call of the spree it ended. */
-export function end(book: Book): string | undefined {
-  const ended = book.current
+/** Ends the spree under way in a conversation, so the next call there starts another. Returns the first call of the spree it ended. */
+export function end(book: Book, loop = ''): string | undefined {
+  const ended = book.current.get(loop)
   if (ended === undefined) return undefined
   ended.isLive = false
-  book.current = undefined
+  book.current.delete(loop)
   return ended.calls[0]
 }
 
@@ -80,17 +84,20 @@ export function thoughtSplits(messages: readonly RequestMessage[]): string[] {
  * Reads the sprees of a conversation off its messages, for the calls made before the mod was loaded.
  * Text ends a spree, Claude's or the person's, and so does a note of thinking, which the messages do
  * not show: `splits` names the calls that follow one. No spree is live: a call that follows the last
- * one joins it and makes it so.
+ * one joins it and makes it so. The main conversation is read first, into an empty book, and each
+ * subagent's after it, under the subagent's id.
  */
-export function restore(book: Book, messages: readonly SessionMessage[], splits: ReadonlySet<string>): void {
-  book.spreeOf.clear()
-  book.markOf.clear()
-  book.current = undefined
+export function restore(book: Book, messages: readonly SessionMessage[], splits: ReadonlySet<string>, loop = ''): void {
+  if (loop === '') {
+    book.spreeOf.clear()
+    book.markOf.clear()
+    book.current.clear()
+  }
   for (const message of messages) {
-    if (message.text.trim() !== '') end(book)
+    if (message.text.trim() !== '') end(book, loop)
     for (const use of message.toolUses) {
-      if (splits.has(use.tool_use_id)) end(book)
-      join(book, use.tool_use_id)
+      if (splits.has(use.tool_use_id)) end(book, loop)
+      join(book, use.tool_use_id, loop)
       const call = { tool: use.tool, input: use.input, output: use.result ?? use.text, isRunning: false, isErrored: use.isError === true, isInterrupted: false }
       book.markOf.set(use.tool_use_id, markOf(call))
     }

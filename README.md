@@ -5,6 +5,7 @@ want.
 
 - [`cleaner-tool-lines`](#cleaner-tool-lines): one line for each tool call
 - [`restyled-chat`](#restyled-chat): color themes, and code blocks in the colors of the theme
+- [`inbox`](#inbox): a side panel of what the conversation leaves open
 
 ## Get started
 
@@ -54,6 +55,21 @@ claude plugin install restyled-chat@cc-extensions
 
 For a preview of every theme, and for how to add one, see the
 [`restyled-chat` README](restyled-chat/README.md).
+
+## inbox
+
+Keeps a list of what the conversation leaves open: questions, your own tasks, findings, and asks
+that are not finished. A handle in the status row shows the count and opens the list in a side
+panel.
+
+[Watch the demo (1 min 47 s)](media/inbox.mp4)
+
+```sh
+claude plugin install inbox@cc-extensions
+```
+
+The mod needs the fullscreen interface, and it adds two short model calls to each exchange. For how
+items open and close, see the [`inbox` README](inbox/README.md).
 
 ## Check a change
 

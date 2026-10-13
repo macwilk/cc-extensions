@@ -12,6 +12,11 @@
       "name": "restyled-chat",
       "source": "./restyled-chat",
       "description": "Color themes and full-width code blocks for the Claude Code terminal"
+    },
+    {
+      "name": "inbox",
+      "source": "./inbox",
+      "description": "A side panel that keeps what a conversation leaves open: questions, your tasks, findings and unfinished asks"
     }
   ]
 }

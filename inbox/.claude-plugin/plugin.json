@@ -1,0 +1,17 @@
+{
+  "name": "inbox",
+  "description": "A side panel that keeps what a conversation leaves open: questions, your tasks, findings and unfinished asks",
+  "author": {
+    "name": "macwilk"
+  },
+  "license": "GPL-3.0-or-later",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "useHaiku": {
+      "type": "boolean",
+      "title": "Read with Haiku",
+      "description": "The inbox reads each prompt and each reply with a model. On, it uses Haiku, which costs less and misses more. Off, it uses Sonnet.",
+      "default": false
+    }
+  }
+}

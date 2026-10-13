@@ -62,7 +62,7 @@ Keeps a list of what the conversation leaves open: questions, your own tasks, fi
 that are not finished. A handle in the status row shows the count and opens the list in a side
 panel.
 
-[Watch the demo (1 min 47 s)](media/inbox.mp4)
+https://github.com/user-attachments/assets/0091b665-7ee2-4b8a-858b-d5a6d0ed09d2
 
 ```sh
 claude plugin install inbox@cc-extensions

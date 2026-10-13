@@ -74,3 +74,6 @@ claude plugin install cleaner-tool-lines@cc-extensions
 ```
 
 In a Claude Code session that is already open, run `/reload-plugins`.
+
+To receive new versions, run `/plugin`, go to the **Marketplaces** tab, select `cc-extensions`, and
+then select **Enable auto-update**. Claude Code leaves auto-update off for this marketplace.

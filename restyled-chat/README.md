@@ -55,6 +55,9 @@ claude plugin install restyled-chat@cc-extensions
 
 In a Claude Code session that is already open, run `/reload-plugins`.
 
+To receive new versions, run `/plugin`, go to the **Marketplaces** tab, select `cc-extensions`, and
+then select **Enable auto-update**. Claude Code leaves auto-update off for this marketplace.
+
 ## Turn on a theme
 
 1. In Claude Code, run `/theme`.

@@ -18,6 +18,10 @@ claude plugin marketplace add macwilk/cc-extensions
 Then install a mod with the command in its section. In a Claude Code session that is already open,
 run `/reload-plugins` afterward.
 
+Claude Code leaves auto-update off for this marketplace, so you stay on the version that you
+installed. To receive new versions, run `/plugin`, go to the **Marketplaces** tab, select
+`cc-extensions`, and then select **Enable auto-update**.
+
 ## cleaner-tool-lines
 
 Folds the tool calls that Claude makes in a row into one line, so the conversation reads straight

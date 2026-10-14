@@ -351,8 +351,7 @@ export function didLines(messages: Message[], most = depth.calls, cwd = '') {
 /**
  * The items Claude closed itself in the turn being audited, as done or as dropped: the audit is the
  * check on those. A close keeps the id of the engine's turn it was made in. One that kept none, from
- * a build before this one or from a reload of the mod in the middle of a turn, is told by the count
- * of prompts as it stands.
+ * a build before this one, is told by the count of prompts as it stands.
  */
 export function closedByClaude(ledger: Ledger, turnId?: string) {
   const isClosed = (item: Item) => item.status === 'done' || item.status === 'dropped'

@@ -5,7 +5,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, ThemeKey } from 'claude-code'
 
-import type { Check, Event, Item, Kind, Ledger, Pending, View } from '../types'
+import type { Check, Event, Item, Kind, Ledger, Pending, Running, View } from '../types'
 import { SECTION_NAME, clip, draftOf, linesOf, nameOf, sayOf, sentOf, without, wrapped, type Decoration } from './capture'
 import { AGENT_SPEC, AGENT_TYPE, ASK_AGAIN_AFTER, CHECKS_AT_ONCE, HAND_BACK, RECEIVED, STOPPED, canCheck, checkAsk, checkBack, checkDismissed, checkLost, ranLine, sayOfCheck, stepsOf, withRan } from './checks'
 import { EMPTY, ageOf, apply, carriedTo, forkPoint, layoutOf, marksOf, needsYou, opened, progressOf, rebased, replay, rewoundTo, sectionsOf, type GoalBlock, type Section } from './ledger'
@@ -22,6 +22,7 @@ const ledgerAtom = atom({ plugin: 'inbox', key: 'ledger' } as const, EMPTY)
 // The audit a turn's end asked for, until it has finished. It is kept in the session's state because
 // a reload of the mod cancels the timer that audit waits on, and the audit with it.
 const pendingAtom = atom({ plugin: 'inbox', key: 'pending' } as const, null as Pending | null)
+const runningAtom = atom({ plugin: 'inbox', key: 'running' } as const, null as Running | null)
 
 type Color = ThemeKey
 /** Each section its own accent, so its bar and count are told apart at a glance. */
@@ -119,6 +120,27 @@ const passes = {
   agents: new Map<string, Subagent & { told: number; report?: string; calls: string[] }>(),
 }
 const isClosed = (item: Item) => item.status === 'done' || item.status === 'dropped'
+
+/**
+ * Keeps the running turn in the session's state, which a reload of the mod leaves as it is, while
+ * the mod's own memory starts over. What a prompt took with it for a take-back is not kept.
+ */
+function keepTurn($: EngineInterface) {
+  const told = ({ text, isNotice, asked, answered }: Sent) => ({ text, isNotice, asked, answered })
+  const running: Running = { ...(passes.turnId === undefined ? {} : { id: passes.turnId }), heard: passes.turn?.map(told) ?? null, waiting: passes.waiting.map(told) }
+
+  return update($, runningAtom, () => running)
+}
+
+/** Takes the running turn up from the session's state, when this load of the mod knows of none. */
+async function takeUpTurn($: EngineInterface) {
+  const running = await read($, runningAtom)
+  if (!running || passes.turn !== null || passes.turnId !== undefined || passes.waiting.length > 0) return
+  const sent = (told: Pending['turn'][number]): Sent => ({ ...told, answered: told.answered ?? [] })
+  passes.turn = running.heard?.map(sent) ?? null
+  passes.turnId = running.id
+  passes.waiting = running.waiting.map(sent)
+}
 
 /**
  * The stored view as this build understands it. A session keeps its state across a reload, so the
@@ -765,6 +787,7 @@ async function promptPass($: EngineInterface, message: string, sent: Sent, lastR
   })
   // Added to the list the turn's audit job already holds, so that a read that ends after the turn does still counts.
   sent.answered.push(...said.answers.map(answer => answer.id))
+  await keepTurn($)
 }
 
 /**
@@ -819,6 +842,7 @@ export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
     seen.cwd = e.cwd
     await restore($)
+    await takeUpTurn($)
     // An audit still in the state was cut off by a reload of the mod, unless this load of it is the one running it.
     const left = await read($, pendingAtom)
     if (left && !passes.audits.has(left.id)) audit($, left)
@@ -857,7 +881,10 @@ export const register: Register = (on, options) => {
     }
     if (e.origin.kind !== 'composer') {
       // A notice that starts a turn of its own is what that turn's reply answers.
-      if (e.turnId === undefined) passes.waiting.push({ text: e.text, isNotice: true, asked: [], answered: [] })
+      if (e.turnId === undefined) {
+        passes.waiting.push({ text: e.text, isNotice: true, asked: [], answered: [] })
+        await keepTurn($)
+      }
 
       return next(e)
     }
@@ -870,6 +897,7 @@ export const register: Register = (on, options) => {
     Object.assign(seen, { hasStaged: false, recorded: 0, agentOpened: 0 })
     const submitted: Sent = { text: e.text, isNotice: false, asked: [], answered: sent.map(one => one.id), before }
     passes.waiting.push(submitted)
+    await keepTurn($)
     // Read now, before Claude starts on this message: what the message answers is the reply before it.
     const lastReply = lastReplyOf((await $.session.messages()) as Message[])
     queued($, () => promptPass($, rest, submitted, lastReply))
@@ -1024,6 +1052,7 @@ export const register: Register = (on, options) => {
     passes.turnId = e.turnId
     const at = passes.waiting.findIndex(sent => sent.text === e.text)
     passes.turn = passes.waiting.splice(0, at >= 0 ? at + 1 : e.text === '' ? 0 : passes.waiting.length)
+    await keepTurn($)
 
     return next(e)
   })
@@ -1037,7 +1066,10 @@ export const register: Register = (on, options) => {
     if (e.agentId !== undefined || e.message.name !== 'queued_command' || !turn) return next(e)
     const told = e.message.content.flatMap(block => (block.type === 'text' ? [block.text] : [])).join('\n')
     const at = passes.waiting.findIndex(sent => !sent.isNotice && sent.text !== '' && told.includes(sent.text))
-    if (at >= 0) turn.push(...passes.waiting.splice(at, 1))
+    if (at >= 0) {
+      turn.push(...passes.waiting.splice(at, 1))
+      await keepTurn($)
+    }
 
     return next(e)
   })
@@ -1063,6 +1095,7 @@ export const register: Register = (on, options) => {
     const turn = passes.turn ?? passes.waiting.splice(0)
     passes.turn = null
     passes.turnId = undefined
+    await keepTurn($)
     // A prompt cancelled before Claude wrote anything goes back in the prompt box, and Claude Code
     // takes it out of the conversation: its count of turns is what it was when the prompt was sent.
     // Then the inbox is put back too. A turn stopped later stays in the conversation, and so does

@@ -146,8 +146,14 @@ export type View = {
  */
 export type Pending = { id: string; answer: string; turn: { text: string; isNotice: boolean; asked: string[]; answered?: string[] }[]; did?: string[]; said?: string[]; agents?: string[]; todo?: string[]; isCut?: boolean }
 
+/**
+ * The turn that is running, kept where a reload of the mod leaves it: the engine's id of the turn,
+ * the messages that have reached Claude in it, and the ones the person sent that have not yet.
+ */
+export type Running = { id?: string; heard: Pending['turn'] | null; waiting: Pending['turn'] }
+
 declare module 'claude-code' {
   interface PluginState {
-    inbox: { ledger: Ledger; view: View; pending: Pending | null }
+    inbox: { ledger: Ledger; view: View; pending: Pending | null; running: Running | null }
   }
 }

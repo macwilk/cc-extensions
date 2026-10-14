@@ -1,6 +1,6 @@
 import { expect, mock, test, type TestBody } from 'claude-code/testing'
 
-import type { Ledger, Pending } from '../types'
+import type { Ledger, Pending, Running } from '../types'
 
 type Engine = Parameters<TestBody>[0]
 type On = Parameters<TestBody>[1]
@@ -17,7 +17,7 @@ const PANE = { title: 'Inbox', isFocused: false, bodyColumns: 48, placement: 'do
  * Stands for what is beneath the mod: a clock, a home folder, the conversation's files, its id, and
  * models that answer what the test scripted. `said` may change while the test runs.
  */
-function world(on: On, said: Said = {}, files: Record<string, string> = {}, pending: Pending | null = null) {
+function world(on: On, said: Said = {}, files: Record<string, string> = {}, pending: Pending | null = null, running: Running | null = null) {
   const clock = mock.clock(on, { now: 1000 })
   const forked: string[] = []
   const kept = { ledger: undefined as Ledger | undefined, filled: '', audits: [] as string[], logs: [] as string[], turns: 0, pending, rows: [] as { role: string; text: string; toolUses: { tool_use_id: string; tool: string; input: object }[] }[] }
@@ -25,14 +25,17 @@ function world(on: On, said: Said = {}, files: Record<string, string> = {}, pend
   on('session.turns', async () => ({ value: kept.turns }))
   // A test can start with an audit left in the session's state, as a reload of the mod leaves one:
   // until the mod writes that value itself, a read of it gives what the test put there.
-  const seeded = { isRead: pending !== null }
+  const seeded = { isRead: pending !== null, isRunning: running !== null }
   on('state.get', async ($, e, next) => {
     const read = await next(e)
+    // The same for a turn that a reload of the mod finds running.
+    if (seeded.isRunning && e.plugin === 'inbox' && e.key === 'running' && read.value) return { value: { ...read.value, value: running } }
 
     return seeded.isRead && e.plugin === 'inbox' && e.key === 'pending' && read.value ? { value: { ...read.value, value: kept.pending } } : read
   })
   on('state.set', async ($, e, next) => {
     if (e.plugin === 'inbox' && e.key === 'ledger') kept.ledger = e.value as Ledger
+    if (e.plugin === 'inbox' && e.key === 'running') seeded.isRunning = false
     if (e.plugin === 'inbox' && e.key === 'pending') {
       kept.pending = e.value as Pending | null
       seeded.isRead = false
@@ -730,6 +733,23 @@ test('an item sent from the panel is marked as sent with what was said, until th
   expect(book().items[0]).toMatchObject({ status: 'done', closedBy: 'audit', reason: 'The reply closed it: The reply moved the scripts into tools/.' })
   expect(book().items[0]?.sent).toBe(undefined)
   expect(files[LOG]).toContain('"type":"turn"')
+})
+
+// A reload starts the mod's memory over while the turn goes on, and the session's state is what is left of it.
+test('a turn that a reload of the mod finds running is taken up from the state, with its id, its messages and what waits', async ($, on) => {
+  const told = (text: string) => ({ text, isNotice: false, asked: [], answered: [] })
+  const { book, clock, kept } = world(on, {}, {}, null, { id: 't1', heard: [told('rename the branch')], waiting: [told('then tag it')] })
+  await start($)
+  await $.tool.call({ tool: 'mcp__inbox__inbox', tool_use_id: 'u1', ...FINDING })
+  await $.tool.call({ tool: 'mcp__inbox__inbox', action: 'close', id: 'i1', reason: 'The scripts are in tools/ now.', tool_use_id: 'u2' } as never)
+  await delivered($, 'then tag it')
+  await $.turn.complete({ answer: 'Renamed and tagged.', durationMs: 10, isAborted: false, turnId: 't1', reason: 'answer' })
+  await clock.advance(5)
+
+  expect(book().items[0]).toMatchObject({ closedIn: 't1', closedHeard: 1 })
+  expect(kept.audits).toHaveLength(1)
+  expect(kept.audits[0]).toContain('[1] rename the branch\n\n[2] then tag it\n\nWHAT CLAUDE DID')
+  expect(kept.audits[0]).toContain('CLOSED BY CLAUDE THIS TURN\ni1 Demo scripts live only in a temp folder.')
 })
 
 const TWO_ASKS =

@@ -17,7 +17,7 @@ const PANE = { title: 'Inbox', isFocused: false, bodyColumns: 48, placement: 'do
  * Stands for what is beneath the mod: a clock, a home folder, the conversation's files, its id, and
  * models that answer what the test scripted. `said` may change while the test runs.
  */
-function world(on: On, said: Said = {}, files: Record<string, string> = {}, pending: Pending | null = null, running: Running | null = null) {
+function world(on: On, said: Said = {}, files: Record<string, string> = {}, pending: Pending[] | Pending | null = null, running: Running | null = null) {
   const clock = mock.clock(on, { now: 1000 })
   const forked: string[] = []
   const kept = { ledger: undefined as Ledger | undefined, filled: '', audits: [] as string[], logs: [] as string[], turns: 0, pending, rows: [] as { role: string; text: string; toolUses: { tool_use_id: string; tool: string; input: object }[] }[] }
@@ -37,7 +37,7 @@ function world(on: On, said: Said = {}, files: Record<string, string> = {}, pend
     if (e.plugin === 'inbox' && e.key === 'ledger') kept.ledger = e.value as Ledger
     if (e.plugin === 'inbox' && e.key === 'running') seeded.isRunning = false
     if (e.plugin === 'inbox' && e.key === 'pending') {
-      kept.pending = e.value as Pending | null
+      kept.pending = e.value as Pending[] | Pending | null
       seeded.isRead = false
     }
 
@@ -565,19 +565,30 @@ test('a conversation that was compacted, quit and resumed is not taken for one t
   expect(files['/home/me/.claude/inbox/conv-1.marks']).toBe('toolu_a 1 -3\ntoolu_b 2 2\n')
 })
 
-test('an audit that a reload of the mod cut off runs when the mod is loaded again, and once', async ($, on) => {
+test('the audits that a reload of the mod cut off run when the mod is loaded again, each once', async ($, on) => {
+  const left = (id: string, text: string) => ({ id, answer: 'Created it.', turn: [{ text, isNotice: false, asked: [] }] })
+  const { clock, kept } = world(on, { reply: '{}' }, {}, [left('t8', 'create notes.txt'), left('t9', 'create todo.txt')])
+  await start($)
+  await clock.advance(5)
+
+  expect(kept.audits).toHaveLength(2)
+  expect(kept.audits[0]).toContain("THE USER'S MESSAGE\ncreate notes.txt\n")
+  expect(kept.audits[1]).toContain("THE USER'S MESSAGE\ncreate todo.txt\n")
+  expect(kept.pending).toEqual([])
+
+  await start($)
+  await clock.advance(5)
+  expect(kept.audits).toHaveLength(2)
+})
+
+test('an audit that a build before this one left in the state, alone and not in a list, still runs', async ($, on) => {
   const left = { id: 't9', answer: 'Created notes.txt.', turn: [{ text: 'create notes.txt', isNotice: false, asked: [] }] }
   const { clock, kept } = world(on, { reply: '{}' }, {}, left)
   await start($)
   await clock.advance(5)
 
   expect(kept.audits).toHaveLength(1)
-  expect(kept.audits[0]).toContain("THE USER'S MESSAGE\ncreate notes.txt\n")
-  expect(kept.pending).toBe(null)
-
-  await start($)
-  await clock.advance(5)
-  expect(kept.audits).toHaveLength(1)
+  expect(kept.pending).toEqual([])
 })
 
 test('the end of a turn asks for one audit, however often the mod is started before it runs', async ($, on) => {
@@ -590,6 +601,26 @@ test('the end of a turn asks for one audit, however often the mod is started bef
   await clock.advance(5)
 
   expect(kept.audits).toHaveLength(1)
+})
+
+// A reload of the mod drops the passes waiting in it, so every audit not yet finished is kept in the session's state.
+test('two audits that wait at once are both kept for a reload of the mod, and each runs once', async ($, on) => {
+  const { clock, kept } = world(on, { reply: '{}' })
+  const waiting = () => [kept.pending].flat().map(job => job?.id)
+  await start($)
+  await $.prompt.submit({ text: 'create notes.txt', wait: false, origin: { kind: 'composer' } })
+  await $.turn.start({ text: 'create notes.txt', turnId: 't1' })
+  await $.turn.complete({ answer: 'Created notes.txt.', durationMs: 10, isAborted: false, turnId: 't1', reason: 'answer' })
+  await $.prompt.submit({ text: 'and todo.txt', wait: false, origin: { kind: 'composer' } })
+  await $.turn.start({ text: 'and todo.txt', turnId: 't2' })
+  await $.turn.complete({ answer: 'Created todo.txt.', durationMs: 10, isAborted: false, turnId: 't2', reason: 'answer' })
+
+  expect(waiting()).toEqual(['t1', 't2'])
+
+  await clock.advance(5)
+
+  expect(kept.audits).toHaveLength(2)
+  expect(waiting()).toEqual([])
 })
 
 // A prompt cancelled before Claude writes anything goes back in the prompt box, and Claude Code takes

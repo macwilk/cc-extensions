@@ -19,9 +19,11 @@ const SHAPE = 2
 const OFF: View = { shape: SHAPE, isPanelOpen: false, folded: ['later', 'closed'], open: [], detailed: [], added: {}, typed: {}, picks: {}, shownGoals: [], agents: [], tick: 0 }
 const viewAtom = atom({ plugin: 'inbox', key: 'view' } as const, OFF)
 const ledgerAtom = atom({ plugin: 'inbox', key: 'ledger' } as const, EMPTY)
-// The audit a turn's end asked for, until it has finished. It is kept in the session's state because
-// a reload of the mod cancels the timer that audit waits on, and the audit with it.
-const pendingAtom = atom({ plugin: 'inbox', key: 'pending' } as const, null as Pending | null)
+// The audits that the ends of turns asked for, each until it has finished. They are kept in the
+// session's state because a reload of the mod cancels the timers they wait on, and the audits with
+// them. A build before this one kept one audit there, and not a list.
+const pendingAtom = atom({ plugin: 'inbox', key: 'pending' } as const, [] as Pending[] | Pending | null)
+const listOf = (left: Pending[] | Pending | null) => (Array.isArray(left) ? left : left ? [left] : [])
 const runningAtom = atom({ plugin: 'inbox', key: 'running' } as const, null as Running | null)
 
 type Color = ThemeKey
@@ -835,7 +837,7 @@ function audit($: EngineInterface, job: Pending) {
     } finally {
       passes.audits.delete(job.id)
       passes.touched.delete(job.id)
-      await update($, pendingAtom, left => (left?.id === job.id ? null : left))
+      await update($, pendingAtom, left => listOf(left).filter(one => one.id !== job.id))
     }
   })
 }
@@ -847,9 +849,8 @@ export const register: Register = (on, options) => {
     seen.cwd = e.cwd
     await restore($)
     await takeUpTurn($)
-    // An audit still in the state was cut off by a reload of the mod, unless this load of it is the one running it.
-    const left = await read($, pendingAtom)
-    if (left && !passes.audits.has(left.id)) audit($, left)
+    // Each audit still in the state was cut off by a reload of the mod, unless this load of it is the one running it.
+    for (const left of listOf(await read($, pendingAtom))) if (!passes.audits.has(left.id)) audit($, left)
     await $.command.register({ name: 'inbox', description: 'Show or hide the inbox panel' })
     await $.tool.register({ name: TOOL_NAME, description: TOOL_DESCRIPTION, inputSchema: TOOL_SCHEMA, isDeferred: false })
     // A new session's prompt box is empty, whatever the last one held.
@@ -1129,7 +1130,7 @@ export const register: Register = (on, options) => {
       const did = newest(passes.did.length >= told.length ? passes.did : told)
       const answer = isCut ? `${e.answer}\n\n${CUT_SHORT}`.trim() : e.answer
       const job = { id: e.turnId, answer, turn: turn.map(({ text, isNotice, asked, answered }) => ({ text, isNotice, asked, answered })), did, said: saidOf(messages, e.answer), agents: await subagentsDid($, turn), todo: todoOf(messages), ...(isCut ? { isCut } : {}) }
-      await update($, pendingAtom, () => job)
+      await update($, pendingAtom, left => [...listOf(left), job])
       audit($, job)
     }
     // Last, and never in the way of the audit: a mark that is not written only costs a fork its inbox.

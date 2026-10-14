@@ -154,6 +154,6 @@ export type Running = { id?: string; heard: Pending['turn'] | null; waiting: Pen
 
 declare module 'claude-code' {
   interface PluginState {
-    inbox: { ledger: Ledger; view: View; pending: Pending | null; running: Running | null }
+    inbox: { ledger: Ledger; view: View; pending: Pending[] | Pending | null; running: Running | null }
   }
 }

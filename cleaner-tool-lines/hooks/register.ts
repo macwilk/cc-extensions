@@ -38,7 +38,13 @@ const callsInRuns = new Set<string>()
 
 const STATE_COLOR = { running: 'warning', done: 'success', failed: 'error' } as const
 
+/** The color a part of a line takes: its own, or the theme's gray on a line the setting grays. */
+function tint(isGray: boolean, color?: string): string | undefined {
+  return isGray ? 'inactive' : color
+}
+
 type Elements = ReturnType<EngineInterface['ui']['resolve']>
+type Settings = { isShowingRunning: boolean; isGraying: boolean }
 /** A spree folded into one line: the calls of it that have a row, and whether the person opened it. */
 type Fold = { spree: Spree; first: string; shown: string[]; marks: Mark[]; isOpen: boolean }
 
@@ -62,9 +68,10 @@ async function redraw($: EngineInterface, first: string | undefined) {
 }
 
 /** The one line of a spree: how many calls, then what they were. A press opens and closes the spree. */
-function spreeLine($: EngineInterface, { Box, Text, Button }: Elements, fold: Fold, isShowingRunning: boolean, columns: number) {
+function spreeLine($: EngineInterface, { Box, Text, Button }: Elements, fold: Fold, settings: Settings, columns: number) {
   // Where the setting asks, a spree still under way names its latest call, and its dot and note are that call's.
-  const naming = isShowingRunning && fold.spree.isLive && !fold.isOpen ? fold.marks.at(-1) : undefined
+  const naming = settings.isShowingRunning && fold.spree.isLive && !fold.isOpen ? fold.marks.at(-1) : undefined
+  const isGray = settings.isGraying && !fold.isOpen
   const failed = fold.marks.filter(mark => mark.state === 'failed').length
   const state = naming?.state ?? (fold.marks.some(mark => mark.state === 'running') ? 'running' : failed > 0 ? 'failed' : 'done')
   const head = `${fold.isOpen ? '▾' : '▸'} ${fold.marks.length} tool_calls${fold.isOpen ? '' : ': '}`
@@ -88,8 +95,13 @@ function spreeLine($: EngineInterface, { Box, Text, Button }: Elements, fold: Fo
         onPress: () => update($, memberOf(isSpreeOpen, { requestId: fold.first }), wasOpen => !wasOpen),
         children: [
           Text({ color: 'inactive', children: [head] }),
-          ...(naming === undefined ? [told] : [Text({ bold: true, children: [naming.tool] }), told.slice(naming.tool.length)]),
-          ...(noteText === '' ? [] : [Text({ color: state === 'failed' ? 'error' : 'inactive', children: [noteText] })]),
+          ...(naming === undefined
+            ? [Text({ color: tint(isGray), children: [told] })]
+            : [
+                Text({ bold: true, color: tint(isGray), children: [naming.tool] }),
+                Text({ color: tint(isGray), children: [told.slice(naming.tool.length)] }),
+              ]),
+          ...(noteText === '' ? [] : [Text({ color: tint(isGray, state === 'failed' ? 'error' : 'inactive'), children: [noteText] })]),
           ' '.repeat(Math.max(0, room - cellsIn(told))),
         ],
       }),
@@ -101,8 +113,9 @@ export const register: Register = (on, options) => {
   // Collapsing folds a spree, the tool calls Claude makes between two pieces of its reply, into one
   // line that counts them by tool. Off, every call has its line. Showing the running call has that
   // one line name the latest call while Claude is still making calls. Both are on unless set off.
+  // Graying draws every closed line in gray, and is off unless set on.
   const isCollapsing = options.collapse !== false
-  const isShowingRunning = options.showRunning !== false
+  const settings: Settings = { isShowingRunning: options.showRunning !== false, isGraying: options.grayscale === true }
   const book = emptyBook()
 
   // The conversations whose response under way last drew a note of Claude's thinking: the main one
@@ -204,7 +217,7 @@ export const register: Register = (on, options) => {
     const { Box } = elements
     const columns = e.viewport?.columns ?? UNMEASURED_COLUMNS
     const fold = await foldOf($, book, e.props.calls[0]?.tool_use_id)
-    const count = fold !== undefined && e.props.calls.some(call => call.tool_use_id === fold.shown[0]) ? [spreeLine($, elements, fold, isShowingRunning, columns)] : []
+    const count = fold !== undefined && e.props.calls.some(call => call.tool_use_id === fold.shown[0]) ? [spreeLine($, elements, fold, settings, columns)] : []
     // A run Claude Code marks expanded is shaded whole, with a spare row beneath it. The Box draws the
     // terminal's own background over the shade, and its margin takes the row back.
     const cover = e.props.isExpanded ? { backgroundColor: NO_COLOR, marginBottom: -1 } : {}
@@ -230,7 +243,7 @@ export const register: Register = (on, options) => {
     const inRun = callsInRuns.has(id)
     const fold = await foldOf($, book, id)
     // A run draws the line of its spree itself, above the calls it holds.
-    const count = fold !== undefined && !inRun && fold.shown[0] === id ? [spreeLine($, elements, fold, isShowingRunning, columns)] : []
+    const count = fold !== undefined && !inRun && fold.shown[0] === id ? [spreeLine($, elements, fold, settings, columns)] : []
     if (fold !== undefined && !fold.isOpen) return Box({ flexDirection: 'column', children: count })
     const inset = fold === undefined ? 0 : LISTED
     const mine = memberOf(isOpen, e)
@@ -243,6 +256,7 @@ export const register: Register = (on, options) => {
     const subject = open ? '' : `(${closedSubject(e.props.input, lineRoom - cellsIn(`${head}${e.props.tool}()${noteText}`))})`
     // A press lands on the button alone, so spaces carry the button on to the edge of the row.
     const fill = ' '.repeat(Math.max(0, lineRoom - cellsIn(`${head}${e.props.tool}${subject}${noteText}`)))
+    const isGray = settings.isGraying && !open
     const line = Box({
       flexDirection: 'row',
       marginLeft: INDENT + inset,
@@ -258,11 +272,11 @@ export const register: Register = (on, options) => {
             // A color, not dimColor: while the pointer is on a folded run, Claude Code draws every dim
             // text in the run at full strength, which would light this line whenever a neighbour is hovered.
             Text({ color: 'inactive', children: [head] }),
-            Text({ bold: true, children: [e.props.tool] }),
-            subject,
+            Text({ bold: true, color: tint(isGray), children: [e.props.tool] }),
+            Text({ color: tint(isGray), children: [subject] }),
             ...(callNote === undefined
               ? []
-              : [Text({ color: e.props.isErrored || e.props.isInterrupted ? 'error' : 'inactive', children: [noteText] })]),
+              : [Text({ color: tint(isGray, e.props.isErrored || e.props.isInterrupted ? 'error' : 'inactive'), children: [noteText] })]),
             fill,
           ],
         }),

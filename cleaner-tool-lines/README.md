@@ -60,6 +60,7 @@ Two settings change this. To set one, run `/config` and search for its name:
 - **Collapse tool calls:** turn it off to give every call its own line.
 - **Show the running tool call:** turn it off to have the line count the calls by tool while Claude
   is still making them, too.
+- **Gray out closed tool calls:** turn it on to have the line grayed out when collapsed, which makes it stand out less. 
 
 ## Before you begin
 

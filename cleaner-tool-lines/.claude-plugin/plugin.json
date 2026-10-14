@@ -18,6 +18,12 @@
       "title": "Show the running tool call",
       "description": "While Claude is still making calls, the collapsed line shows the latest one. Off, it shows the count alone. Has no effect unless tool calls are collapsed.",
       "default": true
+    },
+    "grayscale": {
+      "type": "boolean",
+      "title": "Gray out closed tool calls",
+      "description": "Renders closed/folded tools call grayed out making them stand out less. The dot will still render colored.",
+      "default": false
     }
   }
 }

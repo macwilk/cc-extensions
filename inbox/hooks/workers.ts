@@ -566,20 +566,22 @@ export function promptEvents(ledger: Ledger, said: PromptRead, at: number) {
  * What an audit was asked about: the ledger it was given, and the items that the messages of its
  * turn answered. `heard` is left out by a job that a build before this one kept. `isCut` is true for
  * a turn that ended without a reply, which settles nothing: its audit can only reopen what Claude closed.
+ * `touched` holds the items the person changed in the panel after the turn ended.
  */
-export type Since = { book: Ledger; heard?: string[]; isCut?: boolean }
+export type Since = { book: Ledger; heard?: string[]; isCut?: boolean; touched?: string[] }
 
 /**
  * The items an audit leaves alone. It takes seconds and may run after the next message, so the
  * ledger it writes to is not the one it read. An item that was closed, reopened or answered while it
- * was out has moved on, and an answer that came in a message its turn never heard is for the audit
- * of the turn that does hear it.
+ * was out has moved on, and so has one the person changed in the panel while it waited to start. An
+ * answer that came in a message its turn never heard is for the audit of the turn that does hear it.
  */
 function beyond(since: Since, now: Ledger) {
   const read = new Map(since.book.items.map(item => [item.id, item]))
   const isBeyond = (item: Item) => {
     const was = read.get(item.id)
     if (!was || was.status !== item.status || was.closedBy !== item.closedBy || was.sent !== item.sent) return true
+    if (since.touched?.includes(item.id)) return true
 
     return since.heard !== undefined && item.sent !== undefined && !since.heard.includes(item.id)
   }

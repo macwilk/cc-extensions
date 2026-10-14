@@ -105,9 +105,10 @@ type Sent = { text: string; isNotice: boolean; asked: string[]; answered: string
  * a reply to: `waiting` holds what was submitted and has not reached Claude yet, and `turn` what
  * the running turn answers. `turnId` is the engine's id of that turn, which each close Claude makes
  * in it keeps. `did` holds the running turn's tool calls, each kept as it is made: a
- * compaction in the middle of a turn takes the earlier ones out of the conversation. `agents` holds
- * the subagents Claude started, each until a read has been told how it ended: `told` is how many of
- * its tool calls a read has been given, and `report` what it handed back.
+ * compaction in the middle of a turn takes the earlier ones out of the conversation. `touched`
+ * holds, for each audit not yet finished, the items the person changed in the panel since its turn
+ * ended. `agents` holds the subagents Claude started, each until a read has been told how it ended:
+ * `told` is how many of its tool calls a read has been given, and `report` what it handed back.
  */
 const passes = {
   queue: Promise.resolve(),
@@ -116,6 +117,7 @@ const passes = {
   turnId: undefined as string | undefined,
   did: [] as string[],
   audits: new Set<string>(),
+  touched: new Map<string, string[]>(),
   depth: readAt(undefined),
   agents: new Map<string, Subagent & { told: number; report?: string; calls: string[] }>(),
 }
@@ -607,6 +609,7 @@ function doTheRest($: EngineInterface, block: GoalBlock) {
 function setStatus($: EngineInterface, id: string, how: 'done' | 'dropped' | 'later' | 'open') {
   return async () => {
     await record($, () => [how === 'open' ? { type: 'reopen', id } : how === 'later' ? { type: 'later', id, reason: LATER_REASON } : { type: 'close', id, how, by: 'you', reason: BY_YOU[how] }])
+    for (const job of passes.audits) passes.touched.set(job, [...(passes.touched.get(job) ?? []), id])
     await change($, was => ({
       ...was,
       added: Object.fromEntries(Object.entries(was.added).filter(([one]) => one !== id)),
@@ -809,7 +812,7 @@ async function replyPass($: EngineInterface, answer: string, turn: Pending['turn
   const at = await $.clock.now()
   // Read when the audit is back: the read of a message that reached the turn late may have ended meanwhile.
   const heard = turn.every(sent => sent.answered !== undefined) ? turn.flatMap(sent => sent.answered ?? []) : undefined
-  await record($, now => replyEvents(now, said, at, { book, heard, isCut: beside.isCut }))
+  await record($, now => replyEvents(now, said, at, { book, heard, isCut: beside.isCut, touched: passes.touched.get(beside.turnId ?? '') }))
   // A turn that was cut short is read for what Claude closed in it, and for nothing else.
   if (beside.isCut) return
   for (const doubt of said.unsure) {
@@ -831,6 +834,7 @@ function audit($: EngineInterface, job: Pending) {
       await replyPass($, job.answer, job.turn, job.did ?? didLines((await $.session.messages()) as Message[], undefined, seen.cwd), { said: job.said, agents: job.agents, todo: job.todo, turnId: job.id, isCut: job.isCut })
     } finally {
       passes.audits.delete(job.id)
+      passes.touched.delete(job.id)
       await update($, pendingAtom, left => (left?.id === job.id ? null : left))
     }
   })

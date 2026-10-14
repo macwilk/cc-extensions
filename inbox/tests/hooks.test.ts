@@ -828,6 +828,27 @@ test('an answer sent while Claude works that does not reach it before the turn e
   expect(book().items[0]).toMatchObject({ status: 'done', closedBy: 'audit' })
 })
 
+// An audit can wait behind the passes before it, and what the person does in the panel meanwhile came after the turn it reads.
+test("an item the person reopens after a turn ends stays open, though that turn's audit had not started", async ($, on) => {
+  const { book, clock } = world(on, { reply: '{"closed": [{"id": "i1", "how": "done", "reason": "The reply moved the scripts into tools/."}]}' })
+  await start($)
+  await $.prompt.submit({ text: 'move the scripts', wait: false, origin: { kind: 'composer' } })
+  await $.turn.start({ text: 'move the scripts', turnId: 't1' })
+  await $.tool.call({ tool: 'mcp__inbox__inbox', tool_use_id: 'u1', ...FINDING })
+  await $.tool.call({ tool: 'mcp__inbox__inbox', action: 'close', id: 'i1', reason: 'The scripts are in tools/ now.', tool_use_id: 'u2' } as never)
+  await $.turn.complete({ answer: 'Moved them into tools/.', durationMs: 10, isAborted: false, turnId: 't1', reason: 'answer' })
+  const ui = await $.ui.mount({ plugin: 'inbox', surface: 'terminal', component: 'Pane', requestId: 'inbox', props: PANE, viewport: { columns: 150, rows: 50 } })
+  await ui.press({ key: 'fold-closed' })
+  await ui.press({ key: 'row-i1' })
+  await ui.press({ key: 'later-i1' })
+
+  expect(book().items[0]).toMatchObject({ status: 'open' })
+
+  await clock.advance(5)
+
+  expect(book().items[0]).toMatchObject({ status: 'open' })
+})
+
 test('a reload of the plugins closes the task that waited on it, and leaves the one that waits on a restart', async ($, on) => {
   const task = (title: string, closesOn: string) => ({ kind: 'task', title, why: 'The change is on disk.', closesOn })
   const { book, clock } = world(on, { reply: JSON.stringify({ open: [task('Run /reload-plugins to load the fix', 'reload'), task('Restart Claude Code for the new base theme', 'restart')] }) })

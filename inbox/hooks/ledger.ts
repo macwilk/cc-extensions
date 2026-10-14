@@ -109,9 +109,11 @@ export function apply(ledger: Ledger, event: Event): Ledger {
     case 'close': {
       const item = ledger.items.find(one => one.id === event.id)
       const dropped = item && event.how === 'dropped' && event.by === 'you' ? [...ledger.dropped, item.title] : ledger.dropped
-      const { sent: _sent, isUnsettled: _isUnsettled, isMissed: _isMissed, ...rest } = item ?? ({} as Item)
+      const { sent: _sent, isUnsettled: _isUnsettled, isMissed: _isMissed, closedIn: _closedIn, closedHeard: _closedHeard, ...rest } = item ?? ({} as Item)
+      const within = { ...(event.in === undefined ? {} : { closedIn: event.in }), ...(event.heard === undefined ? {} : { closedHeard: event.heard }) }
+      const made = { status: event.how, closedBy: event.by, reason: event.reason, closedTurn: ledger.turn, ...within }
 
-      return item ? { ...changed(ledger, event.id, () => ({ ...rest, status: event.how, closedBy: event.by, reason: event.reason, closedTurn: ledger.turn })), dropped } : ledger
+      return item ? { ...changed(ledger, event.id, () => ({ ...rest, ...made })), dropped } : ledger
     }
     case 'later':
       return changed(ledger, event.id, item => ({ ...item, status: 'later', closedBy: 'you', reason: event.reason, closedTurn: ledger.turn }))
@@ -120,7 +122,7 @@ export function apply(ledger: Ledger, event: Event): Ledger {
 
       // An item brought back is as fresh as a new one: its age counts from now.
       return {
-        ...changed(ledger, event.id, ({ closedBy: _closedBy, reason: _reason, closedTurn: _closedTurn, ...item }) => ({ ...item, status: 'open' })),
+        ...changed(ledger, event.id, ({ closedBy: _closedBy, reason: _reason, closedTurn: _closedTurn, closedIn: _closedIn, closedHeard: _closedHeard, ...item }) => ({ ...item, status: 'open' })),
         dropped: ledger.dropped.filter(dropped => dropped !== title),
       }
     }

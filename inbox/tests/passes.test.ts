@@ -121,6 +121,101 @@ test('the reply audit reopens what Claude closed itself when the exchange does n
   expect(after.items[1]?.why).toBe('No edit to CHANGELOG.md was made: the reply only says it will be written.')
 })
 
+test('the audit of a turn is given what Claude closed in that turn, whatever the count of prompts has come to', async () => {
+  const ledger = ledgerOf(
+    () => ({ type: 'turn' }),
+    now => opened(now, 0, 'audit', { kind: 'ask', title: 'Rename the branch to release', from: 'You', why: '', close: 'git branch shows release.' }),
+    now => opened(now, 0, 'audit', { kind: 'ask', title: 'Write the changelog entry', from: 'You', why: '', close: 'CHANGELOG.md has an entry.' }),
+    () => ({ type: 'close', id: 'i1', how: 'done', by: 'claude', reason: 'Claude closed it: git branch shows release.', in: 't1' }),
+    () => ({ type: 'turn' }),
+    () => ({ type: 'close', id: 'i2', how: 'done', by: 'claude', reason: 'Claude closed it: The entry is written.', in: 't2' }),
+  )
+  const first = replyAsk(ledger, [], 'rename and write', false, [], 'Renamed.', { turnId: 't1' })
+  const second = replyAsk(ledger, [], 'rename and write', false, [], 'Written.', { turnId: 't2' })
+  const reopened = JSON.stringify({ reopened: [{ id: 'i1', why: 'The branch is still main.' }, { id: 'i2', why: 'No entry was written.' }] })
+
+  expect(first).toContain('CLOSED BY CLAUDE THIS TURN\ni1 Rename the branch to release.')
+  expect(first).not.toContain('i2 Write the changelog entry')
+  expect(second).toContain('CLOSED BY CLAUDE THIS TURN\ni2 Write the changelog entry.')
+  expect(readReply(ledger, reopened, 't1')?.reopened.map(back => back.id)).toEqual(['i1'])
+  expect(apply(ledger, { type: 'reopen', id: 'i1' }).items[0]?.closedIn).toBeUndefined()
+})
+
+test('what Claude dropped on its own word is given to the audit as well, marked as dropped, and can be reopened', async () => {
+  const ledger = ledgerOf(
+    () => ({ type: 'turn' }),
+    now => opened(now, 0, 'audit', { kind: 'ask', title: 'Write the changelog entry', from: 'You', why: '', close: 'CHANGELOG.md has an entry.' }),
+    () => ({ type: 'close', id: 'i1', how: 'dropped', by: 'claude', reason: 'Claude closed it: The user no longer wants a changelog.', in: 't1', heard: 1 }),
+  )
+
+  expect(replyAsk(ledger, [], 'rename the branch', false, [], 'Renamed.', { turnId: 't1' })).toContain(
+    'CLOSED BY CLAUDE THIS TURN\ni1 Write the changelog entry. To close: CHANGELOG.md has an entry. Claude closed it: The user no longer wants a changelog. [dropped as no longer wanted]',
+  )
+  expect(readReply(ledger, JSON.stringify({ reopened: [{ id: 'i1', why: 'Nothing you said takes the changelog back.' }] }), 't1')?.reopened).toHaveLength(1)
+})
+
+// An audit takes seconds and may run after the next message. The person's newer word is not its to judge.
+test('an audit leaves alone what the person answered or changed after the turn it reads', async () => {
+  const ask = (title: string) => ({ kind: 'ask' as const, title, from: 'You', why: '', close: 'The reply shows it.' })
+  const book = ledgerOf(
+    () => ({ type: 'turn' }),
+    now => opened(now, 0, 'audit', ask('Rename the branch to release')),
+    now => opened(now, 0, 'audit', ask('Write the changelog entry')),
+    now => opened(now, 0, 'audit', ask('Tag the release commit')),
+    now => opened(now, 0, 'audit', ask('Publish the package')),
+    () => ({ type: 'patch', id: 'i1', patch: { sent: 'Yes, rename it.' } }),
+    () => ({ type: 'patch', id: 'i2', patch: { sent: 'Hold the changelog for now.' } }),
+  )
+  // While the audit was out, the person answered i3 and dropped i4 from the panel.
+  const since: Event[] = [
+    { type: 'patch', id: 'i3', patch: { sent: 'Tag it v2, not v1.' } },
+    { type: 'close', id: 'i4', how: 'dropped', by: 'you', reason: 'You dropped it.' },
+  ]
+  const now = since.reduce(apply, book)
+  const closed = ['i1', 'i2', 'i3', 'i4'].map(id => ({ id, how: 'done', reason: 'The last commit holds the rename, the entry, the tag and the release.' }))
+  const said = readReply(book, JSON.stringify({ closed }))
+  // Of the two answers the audit was shown, only the one on i1 came in a message its turn had heard.
+  const after = (said ? replyEvents(now, said, 9, { book, heard: ['i1'] }) : []).reduce(apply, now)
+
+  expect(after.items.map(item => [item.id, item.status, item.closedBy, item.sent])).toEqual([
+    ['i1', 'done', 'audit', undefined],
+    ['i2', 'open', undefined, 'Hold the changelog for now.'],
+    ['i3', 'open', undefined, 'Tag it v2, not v1.'],
+    ['i4', 'dropped', 'you', undefined],
+  ])
+})
+
+test('the tool does not close an item the person has just answered in a message that has not reached Claude', async () => {
+  const ledger = ledgerOf(
+    () => ({ type: 'turn' }),
+    now => opened(now, 0, 'audit', QUESTION),
+    () => ({ type: 'patch', id: 'i1', patch: { sent: 'GPL after all.' } }),
+  )
+  const call = { action: 'close', id: 'i1', reason: 'The user picked MIT.' }
+  const refused = answerTool(ledger, call, 0, 0, { id: 't1', heard: 1, unheard: ['i1'] })
+
+  expect(refused.events).toEqual([])
+  expect(refused.text).toContain('has not reached you')
+  expect(answerTool(ledger, call, 0, 0, { id: 't1', heard: 1, unheard: [] }).events).toMatchObject([{ type: 'close', id: 'i1', in: 't1', heard: 1 }])
+})
+
+// The person can take back what they said: the audit can only tell when it knows which came first.
+test("several messages of one turn are told to the audit by number, and a close of Claude's says after which of them it came", async () => {
+  const ledger = ledgerOf(
+    () => ({ type: 'turn' }),
+    now => opened(now, 0, 'audit', QUESTION),
+    () => ({ type: 'close', id: 'i1', how: 'done', by: 'claude', reason: 'Claude closed it: The user picked MIT.', in: 't1', heard: 1 }),
+  )
+  const several = replyAsk(ledger, [], ['MIT is fine, close that', 'actually, make it GPL'], false, [], 'Done.', { turnId: 't1' })
+  const one = replyAsk(ledger, [], ['MIT is fine, close that'], false, [], 'Done.', { turnId: 't1' })
+
+  expect(several).toContain("THE USER'S MESSAGES, numbered in the order they reached Claude\n[1] MIT is fine, close that\n\n[2] actually, make it GPL\n\nWHAT CLAUDE DID")
+  expect(several).toContain('Claude closed it: The user picked MIT. Closed after message 1 of 2.')
+  expect(one).toContain("THE USER'S MESSAGE\nMIT is fine, close that\n\nWHAT CLAUDE DID")
+  expect(one).not.toContain('Closed after')
+  expect(apply(ledger, { type: 'reopen', id: 'i1' }).items[0]?.closedHeard).toBeUndefined()
+})
+
 test('the tool refuses to record again what the person dropped or what is already listed', async () => {
   const listed = ledgerOf(now => opened(now, 0, 'claude', FINDING))
   const dropped = apply(listed, { type: 'close', id: 'i1', how: 'dropped', by: 'you', reason: 'You dropped it.' })

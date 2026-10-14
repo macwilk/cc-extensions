@@ -11,7 +11,7 @@ import { AGENT_SPEC, AGENT_TYPE, ASK_AGAIN_AFTER, CHECKS_AT_ONCE, HAND_BACK, REC
 import { EMPTY, ageOf, apply, carriedTo, forkPoint, layoutOf, marksOf, needsYou, opened, progressOf, rebased, replay, rewoundTo, sectionsOf, type GoalBlock, type Section } from './ledger'
 import { checkOf, failedCheck, leftQuestions } from './signals'
 import { TOOL_DESCRIPTION, TOOL_NAME, TOOL_SCHEMA, answerTool } from './tool'
-import { AGENT_OPENS_PER_PROMPT, AGENT_RULES, BY_REPLY, PROMPT_RULES, REPLY_RULES, agentAsk, agentEvents, agentPart, didLines, forkAsk, lastReplyOf, newest, promptAsk, promptEvents, readAgent, readAt, readFork, readPrompt, readReply, replyAsk, replyEvents, saidOf, todoOf, toolLine, toolLines, useOf, type Beside, type Message, type Subagent } from './workers'
+import { AGENT_OPENS_PER_PROMPT, AGENT_RULES, BY_REPLY, PROMPT_RULES, REPLY_RULES, agentAsk, agentEvents, agentPart, closedByClaude, didLines, forkAsk, lastReplyOf, newest, promptAsk, promptEvents, readAgent, readAt, readFork, readPrompt, readReply, replyAsk, replyEvents, saidOf, todoOf, toolLine, toolLines, useOf, type Beside, type Message, type Subagent } from './workers'
 
 const PANE = 'inbox'
 /** Raised whenever the fields of View change, so a value an earlier build stored is told apart from this build's. */
@@ -77,6 +77,8 @@ const INTENTS: Record<Kind, { label: string; say: string }[]> = {
 }
 const BY_YOU = { done: 'You marked it done in the panel.', dropped: 'You dropped it in the panel.' }
 const LATER_REASON = 'You set it aside. It comes back when you ask to commit, push or wrap up.'
+/** Told to the audit of a turn that ended without a reply, under whatever Claude had written by then. */
+const CUT_SHORT = '[The turn was stopped here, before Claude finished.]'
 /** Under this many columns the panel has no room for an item's title, and draws its narrow shape. */
 const MIN_COLUMNS = 34
 /** Past this many characters a part of the log is full, and the next events start a new part. The engine writes no file over 4 MiB. */
@@ -95,12 +97,13 @@ const log = { base: '', part: 0, text: '', marks: '', queue: Promise.resolve() }
  * A prompt on its way to a reply. `before` is how things stood when the person sent it, kept so that
  * a prompt they cancel and get back in the prompt box leaves nothing behind.
  */
-type Sent = { text: string; isNotice: boolean; asked: string[]; before?: { ledger: Ledger; turns: number; added: View['added'] }; isTakenBack?: boolean }
+type Sent = { text: string; isNotice: boolean; asked: string[]; answered: string[]; before?: { ledger: Ledger; turns: number; added: View['added'] }; isTakenBack?: boolean }
 /**
  * The model passes, run one after another, since a reply's audit needs the asks its prompt's pass
  * found. A person may type ahead while Claude works, so each reply is audited against what it was
- * a reply to: `waiting` holds what was submitted and has not started a turn yet, and `turn` what
- * the running turn answers. `did` holds the running turn's tool calls, each kept as it is made: a
+ * a reply to: `waiting` holds what was submitted and has not reached Claude yet, and `turn` what
+ * the running turn answers. `turnId` is the engine's id of that turn, which each close Claude makes
+ * in it keeps. `did` holds the running turn's tool calls, each kept as it is made: a
  * compaction in the middle of a turn takes the earlier ones out of the conversation. `agents` holds
  * the subagents Claude started, each until a read has been told how it ended: `told` is how many of
  * its tool calls a read has been given, and `report` what it handed back.
@@ -109,6 +112,7 @@ const passes = {
   queue: Promise.resolve(),
   waiting: [] as Sent[],
   turn: null as Sent[] | null,
+  turnId: undefined as string | undefined,
   did: [] as string[],
   audits: new Set<string>(),
   depth: readAt(undefined),
@@ -759,6 +763,8 @@ async function promptPass($: EngineInterface, message: string, sent: Sent, lastR
 
     return made.events
   })
+  // Added to the list the turn's audit job already holds, so that a read that ends after the turn does still counts.
+  sent.answered.push(...said.answers.map(answer => answer.id))
 }
 
 /**
@@ -766,17 +772,23 @@ async function promptPass($: EngineInterface, message: string, sent: Sent, lastR
  * open. An item the audit cannot judge from one exchange is put to a fork of the main conversation,
  * which reads all of it from the prompt cache while that is still warm.
  */
-async function replyPass($: EngineInterface, answer: string, turn: Sent[], did: string[], beside: Beside) {
+async function replyPass($: EngineInterface, answer: string, turn: Pending['turn'], did: string[], beside: Beside) {
   const book = await ledgerOf($)
   if (answer.trim() === '') return
   const asked = turn.flatMap(sent => sent.asked)
-  const message = turn.map(sent => sent.text).join('\n\n')
+  const message = turn.map(sent => sent.text)
   const isNotice = turn.length > 0 && turn.every(sent => sent.isNotice)
-  const reply = await ask($, 'reply audit', { model: passes.depth.model, system: REPLY_RULES, prompt: replyAsk(book, asked, message, isNotice, did, answer, beside), maxTokens: 3000, effort: 'medium' })
-  const said = reply === null ? null : readReply(book, reply)
+  const request = { model: passes.depth.model, system: REPLY_RULES, prompt: replyAsk(book, asked, message, isNotice, did, answer, beside), maxTokens: 3000, effort: 'medium' as const }
+  // Asked once more when the call fails: an audit that never answers leaves what Claude closed in the turn unread for good.
+  const reply = (await ask($, 'reply audit', request)) ?? (await ask($, 'reply audit', request))
+  const said = reply === null ? null : readReply(book, reply, beside.turnId)
   if (!said) return
   const at = await $.clock.now()
-  await record($, now => replyEvents(now, said, at))
+  // Read when the audit is back: the read of a message that reached the turn late may have ended meanwhile.
+  const heard = turn.every(sent => sent.answered !== undefined) ? turn.flatMap(sent => sent.answered ?? []) : undefined
+  await record($, now => replyEvents(now, said, at, { book, heard, isCut: beside.isCut }))
+  // A turn that was cut short is read for what Claude closed in it, and for nothing else.
+  if (beside.isCut) return
   for (const doubt of said.unsure) {
     const item = book.items.find(one => one.id === doubt.id)
     if (!item) continue
@@ -793,7 +805,7 @@ function audit($: EngineInterface, job: Pending) {
   queued($, async () => {
     try {
       // An audit that a build before this one left in the state has no list of its own.
-      await replyPass($, job.answer, job.turn, job.did ?? didLines((await $.session.messages()) as Message[], undefined, seen.cwd), { said: job.said, agents: job.agents, todo: job.todo })
+      await replyPass($, job.answer, job.turn, job.did ?? didLines((await $.session.messages()) as Message[], undefined, seen.cwd), { said: job.said, agents: job.agents, todo: job.todo, turnId: job.id, isCut: job.isCut })
     } finally {
       passes.audits.delete(job.id)
       await update($, pendingAtom, left => (left?.id === job.id ? null : left))
@@ -845,7 +857,7 @@ export const register: Register = (on, options) => {
     }
     if (e.origin.kind !== 'composer') {
       // A notice that starts a turn of its own is what that turn's reply answers.
-      if (e.turnId === undefined) passes.waiting.push({ text: e.text, isNotice: true, asked: [] })
+      if (e.turnId === undefined) passes.waiting.push({ text: e.text, isNotice: true, asked: [], answered: [] })
 
       return next(e)
     }
@@ -856,7 +868,7 @@ export const register: Register = (on, options) => {
     await record($, () => [{ type: 'turn' }, ...sent.map(one => ({ type: 'patch' as const, id: one.id, patch: { sent: one.said || 'Sent with no note.' }, drop: ['isUnsettled' as const] }))])
     await change($, now => ({ ...now, added: {} }))
     Object.assign(seen, { hasStaged: false, recorded: 0, agentOpened: 0 })
-    const submitted: Sent = { text: e.text, isNotice: false, asked: [], before }
+    const submitted: Sent = { text: e.text, isNotice: false, asked: [], answered: sent.map(one => one.id), before }
     passes.waiting.push(submitted)
     // Read now, before Claude starts on this message: what the message answers is the reply before it.
     const lastReply = lastReplyOf((await $.session.messages()) as Message[])
@@ -992,7 +1004,7 @@ export const register: Register = (on, options) => {
     const at = await $.clock.now()
     let text = ''
     const events = await record($, now => {
-      const answer = answerTool(now, e as Parameters<typeof answerTool>[1], at, seen.recorded)
+      const answer = answerTool(now, e as Parameters<typeof answerTool>[1], at, seen.recorded, passes.turnId === undefined ? undefined : { id: passes.turnId, heard: passes.turn?.length ?? 0, unheard: passes.waiting.flatMap(sent => sent.answered) })
       text = answer.text
 
       return answer.events
@@ -1004,13 +1016,28 @@ export const register: Register = (on, options) => {
   })
 
   // A turn answers what was submitted up to the message it starts with. What the person typed after
-  // that, while Claude was still working, waits for a turn of its own.
+  // that, while Claude was still working, waits: for the running turn to take it in, or for a turn of its own.
   on('turn.start', async ($, e, next) => {
     // An agent's turn is not the conversation's, and answers nothing the person sent.
     if ((e as { agentId?: string }).agentId !== undefined) return next(e)
     passes.did = []
+    passes.turnId = e.turnId
     const at = passes.waiting.findIndex(sent => sent.text === e.text)
     passes.turn = passes.waiting.splice(0, at >= 0 ? at + 1 : e.text === '' ? 0 : passes.waiting.length)
+
+    return next(e)
+  })
+
+  // A message typed while Claude works is handed to it inside the running turn, when that turn is
+  // still calling tools. The turn then answers that message too, and no turn starts for it. One row
+  // hands over one message, and they are handed over in the order they were typed: the row is the
+  // first waiting message whose words it holds, so of two alike only one leaves.
+  on('session.append', { door: 'delivery' }, async ($, e, next) => {
+    const turn = passes.turn
+    if (e.agentId !== undefined || e.message.name !== 'queued_command' || !turn) return next(e)
+    const told = e.message.content.flatMap(block => (block.type === 'text' ? [block.text] : [])).join('\n')
+    const at = passes.waiting.findIndex(sent => !sent.isNotice && sent.text !== '' && told.includes(sent.text))
+    if (at >= 0) turn.push(...passes.waiting.splice(at, 1))
 
     return next(e)
   })
@@ -1035,6 +1062,7 @@ export const register: Register = (on, options) => {
     }
     const turn = passes.turn ?? passes.waiting.splice(0)
     passes.turn = null
+    passes.turnId = undefined
     // A prompt cancelled before Claude wrote anything goes back in the prompt box, and Claude Code
     // takes it out of the conversation: its count of turns is what it was when the prompt was sent.
     // Then the inbox is put back too. A turn stopped later stays in the conversation, and so does
@@ -1052,14 +1080,18 @@ export const register: Register = (on, options) => {
     void followTurn($, e.reason)
     // A check that passed and that the person did not close is closed with the turn.
     await record($, now => passedOf(now, 'engine'))
-    if (e.reason === 'answer') {
+    // A turn that ended without a reply settles nothing, so it is audited only when Claude closed
+    // something in it on its own word: that close has had no other read.
+    const isCut = e.reason !== 'answer'
+    if (!isCut || closedByClaude(await ledgerOf($), e.turnId).length > 0) {
       // The turn's tool calls are in two places, and either can have lost some: the conversation to
       // a compaction, the mod's own list to a reload of the mod. Neither gains any, so the longer is
       // the whole. Read here and not when the audit runs, by when a new prompt may have been sent.
       const messages = (await $.session.messages()) as Message[]
       const told = toolLines(messages, seen.cwd)
       const did = newest(passes.did.length >= told.length ? passes.did : told)
-      const job = { id: e.turnId, answer: e.answer, turn: turn.map(({ text, isNotice, asked }) => ({ text, isNotice, asked })), did, said: saidOf(messages, e.answer), agents: await subagentsDid($, turn), todo: todoOf(messages) }
+      const answer = isCut ? `${e.answer}\n\n${CUT_SHORT}`.trim() : e.answer
+      const job = { id: e.turnId, answer, turn: turn.map(({ text, isNotice, asked, answered }) => ({ text, isNotice, asked, answered })), did, said: saidOf(messages, e.answer), agents: await subagentsDid($, turn), todo: todoOf(messages), ...(isCut ? { isCut } : {}) }
       await update($, pendingAtom, () => job)
       audit($, job)
     }

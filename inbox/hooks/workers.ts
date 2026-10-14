@@ -75,7 +75,7 @@ export type Message = { role: string; text?: string; toolUses?: Use[]; toolResul
 /** A subagent as a read is told of it: what Claude called it, its type, how it ran, and the task Claude gave it. */
 export type Subagent = { name: string; type: string; isBackground: boolean; isInWorkflow: boolean; isDone: boolean; task?: string }
 /** What a read is given of a turn besides its tool calls and its reply. */
-export type Beside = { said?: string[]; agents?: string[]; todo?: string[] }
+export type Beside = { said?: string[]; agents?: string[]; todo?: string[]; turnId?: string; isCut?: boolean }
 export type PromptRead = { asks: { title: string; done: string; quote: string; goal: string | null; isHeld: boolean }[]; answers: { id: string; answer: string }[]; isWrapUp: boolean }
 /** The most asks one message can open. A message that goes through a list of requests gives one for each. */
 export const ASKS_PER_PROMPT = 20
@@ -111,11 +111,14 @@ answers: each open item this message clearly answers, decides, or reports as don
 
 wrap: true when the message asks to commit, push, open a pull request, or wrap up the work.`
 
+/** How the audit is told that Claude closed an item as not wanted any more, and not as done. */
+const AS_DROPPED = '[dropped as no longer wanted]'
+
 export const REPLY_RULES = `You audit one exchange between a user and Claude, a coding assistant: the user's message, what Claude did with its tools, and Claude's reply. Some turns start from a notice of the system's instead, such as a background task ending: then the notice is what the reply answers, and what it reports is known, not a claim to verify. You keep the user's inbox, which lists what the conversation has left open. Reply with one JSON object and nothing else:
 
 {"closed": [{"id": "", "how": "done", "reason": ""}], "missed": [], "unsettled": [], "unsure": [{"id": "", "question": ""}], "reopened": [{"id": "", "why": ""}], "updated": [{"id": "", "why": "", "close": ""}], "open": [{"kind": "", "title": "", "from": "", "why": "", "close": "", "goal": null}]}
 
-What you are given of the turn: WHAT CLAUDE DID lists its tool calls, each with how it ended. A line there that starts "Question dialog" holds what the user chose in a dialog Claude put up: those choices are the user's own, as a message of theirs is, and can answer an open question. WHAT CLAUDE SAID WHILE WORKING, when present, is what Claude wrote to the user earlier in the same turn, before its reply: the user read it, so what it reports, asks or leaves open counts as the reply's own does. WHAT ITS SUBAGENTS DID, when present, lists the helpers Claude handed work to, each with its tool calls and, once it has ended, its report: that work is Claude's, so it shows what was run and changed, and a problem a report names is a problem whether or not the reply repeats it. CLAUDE'S OWN TODO LIST, when present, is its working list as the turn ended: an entry not finished there is a sign that the ask it belongs to is not done, unless the tool calls or the reply show that work done. Never open an item for a todo entry alone.
+What you are given of the turn: WHAT CLAUDE DID lists its tool calls, each with how it ended. A line there that starts "Question dialog" holds what the user chose in a dialog Claude put up: those choices are the user's own, as a message of theirs is, and can answer an open question. WHAT CLAUDE SAID WHILE WORKING, when present, is what Claude wrote to the user earlier in the same turn, before its reply: the user read it, so what it reports, asks or leaves open counts as the reply's own does. WHAT ITS SUBAGENTS DID, when present, lists the helpers Claude handed work to, each with its tool calls and, once it has ended, its report: that work is Claude's, so it shows what was run and changed, and a problem a report names is a problem whether or not the reply repeats it. CLAUDE'S OWN TODO LIST, when present, is its working list as the turn ended: an entry not finished there is a sign that the ask it belongs to is not done, unless the tool calls or the reply show that work done. Never open an item for a todo entry alone. When more than one message of the user's reached Claude in the turn, they are numbered in the order they arrived, and where a later one takes back or changes what an earlier one said, the later one stands.
 
 An inbox that only grows is useless, so closing what this exchange settled matters as much as opening what it leaves. Go through every open item, not only the marked ones.
 
@@ -130,7 +133,7 @@ unsettled: ids of items marked [sent] that the reply did not act on. A [sent] it
 
 unsure: an open item you cannot judge from this exchange because it turns on earlier parts of the conversation, with the one yes-or-no question whose answer would settle it. Use it rarely.
 
-reopened: Claude may close an item itself while it works, on its own word. Those are listed under CLOSED BY CLAUDE THIS TURN, each with what was to show it done and the reason Claude gave. List here each one that the tool results and the reply do not bear out: the work is not there, it failed, or it was only planned. "why" says what is missing, written for the user. Leave out every close the exchange supports, which is most of them.
+reopened: Claude may close an item itself while it works, on its own word. Those are listed under CLOSED BY CLAUDE THIS TURN, each with what was to show it done and the reason Claude gave. List here each one that the tool results and the reply do not bear out: the work is not there, it failed, or it was only planned. Where the user's messages are numbered, a close says after which of them it was made: list it too when a message that came after it takes it back, by saying to keep the item open, by changing the answer the close rests on, or by asking for something else in its place. A message that came before the close takes nothing back. One marked ${AS_DROPPED} was closed by Claude as not wanted any more and not as done: list it when nothing the user wrote, and nothing the reply shows, makes it unwanted or moot. "why" says what is missing or what the user said, written for the user. Leave out every close the exchange supports, which is most of them.
 
 updated: each open item this exchange says more about without settling it. Give "why", the whole account of it as it now stands, written for the user as an item's "why" is (it replaces the old one, so keep what still holds), and for an item that is not an ask "close", what would settle it now. An ask keeps the "To close" it has, which is what the user asked for. An ask the reply worked on and did not finish belongs here, with what was found and what of the work itself is still missing. So does an open issue or unverified item that the reply repeats, narrows or adds to. Decide this before you open anything: whatever is about the same work as an open item goes here, whatever its kind, and is never opened as a second item. An ask the reply declines, or shows cannot be done as asked, is not updated: close it as dropped. Neither is an ask whose "To close" the exchange now meets: close it as done.
 
@@ -345,13 +348,30 @@ export function didLines(messages: Message[], most = depth.calls, cwd = '') {
 }
 
 /** `isNotice` is true for a turn that a notice of the system's started, such as a background task ending, and not a message of the user's. */
-/** The items Claude closed itself since the person's last prompt: the audit is the check on those. */
-export function closedByClaude(ledger: Ledger) {
-  return ledger.items.filter(item => item.status === 'done' && item.closedBy === 'claude' && item.closedTurn === ledger.turn)
+/**
+ * The items Claude closed itself in the turn being audited, as done or as dropped: the audit is the
+ * check on those. A close keeps the id of the engine's turn it was made in. One that kept none, from
+ * a build before this one or from a reload of the mod in the middle of a turn, is told by the count
+ * of prompts as it stands.
+ */
+export function closedByClaude(ledger: Ledger, turnId?: string) {
+  const isClosed = (item: Item) => item.status === 'done' || item.status === 'dropped'
+
+  return ledger.items.filter(item => isClosed(item) && item.closedBy === 'claude' && (item.closedIn === undefined ? item.closedTurn === ledger.turn : item.closedIn === turnId))
 }
 
-export function replyAsk(ledger: Ledger, asked: string[], message: string, isNotice: boolean, did: string[], reply: string, beside: Beside = {}) {
-  const closed = closedByClaude(ledger).map(item => `${item.id} ${item.title}. To close: ${item.close} ${item.reason ?? ''}`)
+/**
+ * `message` is what the turn answers: one text, or each message in the order it reached Claude.
+ * Several are told by number, and a close of Claude's then says after which of them it was made:
+ * the person may take back in a later message what an earlier one said.
+ */
+export function replyAsk(ledger: Ledger, asked: string[], message: string | string[], isNotice: boolean, did: string[], reply: string, beside: Beside = {}) {
+  const messages = typeof message === 'string' ? [message] : message
+  const isSeveral = messages.length > 1
+  const told = isSeveral ? messages.map((one, at) => `[${at + 1}] ${one}`).join('\n\n') : (messages[0] ?? '')
+  const heading = isNotice ? 'THE NOTICE THAT STARTED THIS TURN (from the system, not the user)' : isSeveral ? "THE USER'S MESSAGES, numbered in the order they reached Claude" : "THE USER'S MESSAGE"
+  const after = (item: Item) => (isSeveral && item.closedHeard !== undefined ? ` Closed ${item.closedHeard < 1 ? 'before message 1' : `after message ${item.closedHeard}`} of ${messages.length}.` : '')
+  const closed = closedByClaude(ledger, beside.turnId).map(item => `${item.id} ${item.title}. To close: ${item.close} ${item.reason ?? ''}${item.status === 'dropped' ? ` ${AS_DROPPED}` : ''}${after(item)}`)
   const agents = beside.agents ?? []
   const shown = agents.length <= depth.agents ? agents : [`[${agents.length - depth.agents} earlier subagents left out]`, ...agents.slice(-depth.agents)]
   const said = (beside.said ?? []).join('\n\n')
@@ -366,7 +386,7 @@ export function replyAsk(ledger: Ledger, asked: string[], message: string, isNot
         .map(item => item.title)
         .join('\n') || 'none'
     }`,
-    `${isNotice ? 'THE NOTICE THAT STARTED THIS TURN (from the system, not the user)' : "THE USER'S MESSAGE"}\n${cut(message, depth.message) || 'None: the turn went on without a new message.'}`,
+    `${heading}\n${cut(told, depth.message) || 'None: the turn went on without a new message.'}`,
     `WHAT CLAUDE DID\n${did.join('\n') || 'It called no tools that change anything.'}`,
     ...(shown.length > 0 ? [`WHAT ITS SUBAGENTS DID\n${shown.join('\n')}`] : []),
     ...(beside.todo && beside.todo.length > 0 ? [`CLAUDE'S OWN TODO LIST\n${beside.todo.join('\n')}`] : []),
@@ -447,7 +467,7 @@ function isEvidence(reason: string) {
 }
 
 /** What the reply audit said, kept to what the ledger can hold: closes of items that are open, and new items within the cap. */
-export function readReply(ledger: Ledger, reply: string): ReplyRead | null {
+export function readReply(ledger: Ledger, reply: string, turnId?: string): ReplyRead | null {
   const said = jsonOf(reply)
   if (!said) return null
   const open = new Set(ledger.items.filter(item => item.status === 'open').map(item => item.id))
@@ -466,7 +486,7 @@ export function readReply(ledger: Ledger, reply: string): ReplyRead | null {
 
     return open.has(text(doubt.id)) && !settled.has(text(doubt.id)) && text(doubt.question) !== '' ? [{ id: text(doubt.id), question: text(doubt.question) }] : []
   })
-  const selfClosed = new Set(closedByClaude(ledger).map(item => item.id))
+  const selfClosed = new Set(closedByClaude(ledger, turnId).map(item => item.id))
   const reopened = list(said.reopened).flatMap(one => {
     const back = one as Record<string, unknown>
 
@@ -541,19 +561,55 @@ export function promptEvents(ledger: Ledger, said: PromptRead, at: number) {
 }
 
 /**
+ * What an audit was asked about: the ledger it was given, and the items that the messages of its
+ * turn answered. `heard` is left out by a job that a build before this one kept. `isCut` is true for
+ * a turn that ended without a reply, which settles nothing: its audit can only reopen what Claude closed.
+ */
+export type Since = { book: Ledger; heard?: string[]; isCut?: boolean }
+
+/**
+ * The items an audit leaves alone. It takes seconds and may run after the next message, so the
+ * ledger it writes to is not the one it read. An item that was closed, reopened or answered while it
+ * was out has moved on, and an answer that came in a message its turn never heard is for the audit
+ * of the turn that does hear it.
+ */
+function beyond(since: Since, now: Ledger) {
+  const read = new Map(since.book.items.map(item => [item.id, item]))
+  const isBeyond = (item: Item) => {
+    const was = read.get(item.id)
+    if (!was || was.status !== item.status || was.closedBy !== item.closedBy || was.sent !== item.sent) return true
+
+    return since.heard !== undefined && item.sent !== undefined && !since.heard.includes(item.id)
+  }
+
+  return new Set(now.items.filter(isBeyond).map(item => item.id))
+}
+
+/**
  * What the reply's audit found, as events: closes with their evidence, asks the reply skipped, what
  * was sent and not acted on, and the new items the reply leaves, less any the person dropped before
- * or the inbox already lists.
+ * or the inbox already lists. With `since`, nothing is written to an item the audit must leave alone.
  */
-export function replyEvents(ledger: Ledger, said: ReplyRead, at: number) {
+export function replyEvents(ledger: Ledger, found: ReplyRead, at: number, since?: Since) {
   const { made, push } = builder(ledger)
+  const off = since ? beyond(since, ledger) : new Set<string>()
+  const within = <T extends { id: string }>(ones: T[]) => ones.filter(one => !off.has(one.id))
+  if (since?.isCut) {
+    for (const back of within(found.reopened)) {
+      push({ type: 'reopen', id: back.id })
+      push({ type: 'patch', id: back.id, patch: { why: back.why } })
+    }
+
+    return made.events
+  }
+  const said = { ...found, closed: within(found.closed), reopened: within(found.reopened), updated: within(found.updated), missed: found.missed.filter(id => !off.has(id)), unsettled: found.unsettled.filter(id => !off.has(id)) }
   for (const close of said.closed) push({ type: 'close', id: close.id, how: close.how, by: 'audit', reason: `${BY_REPLY}${close.reason}` })
   // While something Claude started still runs in the background, the work is not over: an ask not yet done is not one that was skipped.
   const isBusy = made.now.items.some(item => item.kind === 'running' && item.status === 'open')
   for (const id of said.missed) if (!isBusy && made.now.items.some(item => item.id === id && item.kind === 'ask')) push({ type: 'patch', id, patch: { isMissed: true } })
   for (const id of said.unsettled) push({ type: 'patch', id, patch: { isUnsettled: true }, drop: ['sent'] })
   // What was sent has now been read. An item the audit neither closed nor called unsettled is open as before.
-  for (const item of made.now.items.filter(one => one.status === 'open' && one.sent !== undefined)) push({ type: 'patch', id: item.id, patch: {}, drop: ['sent'] })
+  for (const item of made.now.items.filter(one => one.status === 'open' && one.sent !== undefined && !off.has(one.id))) push({ type: 'patch', id: item.id, patch: {}, drop: ['sent'] })
   // A close Claude made on its own word, which the exchange does not bear out, is open again with what is missing.
   for (const back of said.reopened) {
     push({ type: 'reopen', id: back.id })

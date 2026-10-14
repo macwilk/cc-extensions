@@ -66,8 +66,13 @@ function listed(item: Item) {
   return `${item.id} [${labelOf(item)}] ${item.title}\n  Why: ${item.why}\n  To close: ${item.close}${answers}`
 }
 
-/** What a call of the tool causes and what Claude reads back. `recorded` is how many items Claude has recorded since the person's last prompt. */
-export function answerTool(ledger: Ledger, call: Call, at: number, recorded: number): { events: Event[]; text: string } {
+/**
+ * What a call of the tool causes and what Claude reads back. `recorded` is how many items Claude has
+ * recorded since the person's last prompt. `turn` is the engine's turn the call is made in and how
+ * many of its messages have reached Claude, both of which a close keeps, and `unheard` the items the
+ * person answered in a message that has not reached Claude yet.
+ */
+export function answerTool(ledger: Ledger, call: Call, at: number, recorded: number, turn?: { id: string; heard: number; unheard?: string[] }): { events: Event[]; text: string } {
   if (call.action === 'get') {
     const ids = (Array.isArray(call.ids) ? call.ids : [call.id]).map(text).filter(Boolean)
     if (ids.length === 0) return { events: [], text: 'A get needs `ids`: the ids quoted in the user\'s message, as in "> Inbox i12: ...".' }
@@ -90,9 +95,11 @@ export function answerTool(ledger: Ledger, call: Call, at: number, recorded: num
     if (!item) return { events: [], text: `No open item clearly matches "${text(call.about)}", so nothing was closed.${stillAsked(ledger) || ' Nothing the user asked for is open.'}` }
     if (item.status !== 'open') return { events: [], text: `${item.id} is not open: it is ${item.status === 'later' ? 'set aside' : item.status}.` }
     if (text(call.reason) === '') return { events: [], text: 'A close needs a reason: what happened, in one sentence the user can check.' }
+    // Closing it would take the person's newer word off the item before anyone has read it.
+    if (turn?.unheard?.includes(item.id)) return { events: [], text: `${item.id} was not closed: the user has just sent something about it that has not reached you yet. Leave it open, and act on their message when it arrives.` }
 
     return {
-      events: [{ type: 'close', id: item.id, how: call.how === 'dropped' ? 'dropped' : 'done', by: 'claude', reason: `Claude closed it: ${text(call.reason)}` }],
+      events: [{ type: 'close', id: item.id, how: call.how === 'dropped' ? 'dropped' : 'done', by: 'claude', reason: `Claude closed it: ${text(call.reason)}`, ...(turn ? { in: turn.id, heard: turn.heard } : {}) }],
       text: `Closed ${item.id}: ${item.title}.${stillAsked(ledger, item.id)}`,
     }
   }

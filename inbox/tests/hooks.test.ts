@@ -4,7 +4,8 @@ import type { Ledger, Pending } from '../types'
 
 type Engine = Parameters<TestBody>[0]
 type On = Parameters<TestBody>[1]
-type Said = { prompt?: string; reply?: string; fork?: string }
+/** What the models answer. `failures` is how many audits of a reply fail before one answers. */
+type Said = { prompt?: string; reply?: string; fork?: string; failures?: number }
 
 const LOG = '/home/me/.claude/inbox/conv-1.jsonl'
 const NO_TOKENS = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }
@@ -74,6 +75,11 @@ function world(on: On, said: Said = {}, files: Record<string, string> = {}, pend
     // Both passes ask the same model, so the rules each is given tell them apart.
     const isPromptPass = (e.system ?? '').startsWith('You read one message')
     if (!isPromptPass) kept.audits.push(e.prompt)
+    if (!isPromptPass && (said.failures ?? 0) > 0) {
+      said.failures = (said.failures ?? 0) - 1
+
+      return { value: { isAnswered: false as const, reason: 'timeout', usage: NO_TOKENS } as never }
+    }
 
     return { value: { isAnswered: true as const, text: (isPromptPass ? said.prompt : said.reply) ?? '{}', usage: NO_TOKENS } }
   })
@@ -359,6 +365,103 @@ test('a message typed while Claude is still working is audited with its own repl
   expect(second).toContain("THE USER'S MESSAGE\nwrite the changelog\n")
 })
 
+test('a message typed while Claude is still working that reaches it in the same turn is audited with that turn, and not again with the next', async ($, on) => {
+  const said: Said = { prompt: '{"asks": [{"title": "Rename the branch", "quote": "rename the branch", "done": "The reply shows it.", "goal": null}]}' }
+  const { clock, kept } = world(on, said)
+  await start($)
+  await $.prompt.submit({ text: 'rename the branch', wait: false, origin: { kind: 'composer' } })
+  await $.turn.start({ text: 'rename the branch', turnId: 't1' })
+  await clock.advance(5)
+  said.prompt = '{"asks": [{"title": "Write the changelog", "quote": "write the changelog", "done": "The reply shows it.", "goal": null}]}'
+  await $.prompt.submit({ text: 'write the changelog', wait: false, turnId: 't1', origin: { kind: 'composer' } })
+  await clock.advance(5)
+  const told = '<system-reminder>\nThe user sent a new message while you were working:\nwrite the changelog\n</system-reminder>'
+  await $.session.append({ door: 'delivery', origin: { kind: 'composer' }, uuid: 'row-1', message: { type: 'attachment', name: 'queued_command', role: 'user', isMeta: true, content: [{ type: 'text', text: told }] } })
+  await $.turn.complete({ answer: 'Renamed, and the changelog is written.', durationMs: 10, isAborted: false, turnId: 't1', reason: 'answer' })
+  await clock.advance(5)
+  said.prompt = '{}'
+  await $.prompt.submit({ text: 'push it', wait: false, origin: { kind: 'composer' } })
+  await $.turn.start({ text: 'push it', turnId: 't2' })
+  await $.turn.complete({ answer: 'Pushed.', durationMs: 10, isAborted: false, turnId: 't2', reason: 'answer' })
+  await clock.advance(5)
+  const [first = '', second = ''] = kept.audits
+
+  expect(kept.audits).toHaveLength(2)
+  expect(first).toContain('i2 [Open ask] [asked now] Write the changelog')
+  expect(first).toContain('[1] rename the branch\n\n[2] write the changelog\n')
+  expect(second).toContain("THE USER'S MESSAGE\npush it\n")
+})
+
+/** A prompt typed mid-turn as the engine hands it to Claude inside the running turn. */
+function delivered($: Engine, text: string) {
+  const told = `<system-reminder>\nThe user sent a new message while you were working:\n${text}\n</system-reminder>`
+
+  return $.session.append({ door: 'delivery', origin: { kind: 'composer' }, uuid: `row-${text}`, message: { type: 'attachment', name: 'queued_command', role: 'user', isMeta: true, content: [{ type: 'text', text: told }] } })
+}
+
+test('what Claude closed before a message typed in the same turn is still given to the audit of that turn', async ($, on) => {
+  const said: Said = { prompt: '{"asks": [{"title": "Rename the branch", "quote": "rename the branch", "done": "The reply shows it.", "goal": null}]}' }
+  const { clock, kept } = world(on, said)
+  await start($)
+  await $.prompt.submit({ text: 'rename the branch', wait: false, origin: { kind: 'composer' } })
+  await $.turn.start({ text: 'rename the branch', turnId: 't1' })
+  await clock.advance(5)
+  await $.tool.call({ tool: 'mcp__inbox__inbox', action: 'close', id: 'i1', reason: 'git branch shows release.', tool_use_id: 'u1' } as never)
+  said.prompt = '{}'
+  await $.prompt.submit({ text: 'thanks', wait: false, turnId: 't1', origin: { kind: 'composer' } })
+  await clock.advance(5)
+  await delivered($, 'thanks')
+  await $.turn.complete({ answer: 'Renamed.', durationMs: 10, isAborted: false, turnId: 't1', reason: 'answer' })
+  await clock.advance(5)
+
+  expect(kept.audits).toHaveLength(1)
+  expect(kept.audits[0]).toContain('CLOSED BY CLAUDE THIS TURN\ni1 Rename the branch. To close: The reply shows it. Claude closed it: git branch shows release. Closed after message 1 of 2.')
+  expect(kept.audits[0]).toContain("THE USER'S MESSAGES, numbered in the order they reached Claude\n[1] rename the branch\n\n[2] thanks\n\nWHAT CLAUDE DID")
+})
+
+test('a turn that a notice starts is not given what Claude closed in the turn before', async ($, on) => {
+  const said: Said = { prompt: '{"asks": [{"title": "Rename the branch", "quote": "rename the branch", "done": "The reply shows it.", "goal": null}]}' }
+  const { clock, kept } = world(on, said)
+  await start($)
+  await $.prompt.submit({ text: 'rename the branch', wait: false, origin: { kind: 'composer' } })
+  await $.turn.start({ text: 'rename the branch', turnId: 't1' })
+  await clock.advance(5)
+  await $.tool.call({ tool: 'mcp__inbox__inbox', action: 'close', id: 'i1', reason: 'git branch shows release.', tool_use_id: 'u1' } as never)
+  await $.turn.complete({ answer: 'Renamed.', durationMs: 10, isAborted: false, turnId: 't1', reason: 'answer' })
+  await clock.advance(5)
+  // A notice is no prompt of the person's, so the count of prompts stands where the turn before left it.
+  await $.prompt.submit({ text: 'The build finished.', wait: false, origin: { kind: 'task-notification' } } as never)
+  await $.turn.start({ text: 'The build finished.', turnId: 't2' })
+  await $.turn.complete({ answer: 'Noted.', durationMs: 10, isAborted: false, turnId: 't2', reason: 'answer' })
+  await clock.advance(5)
+  const [first = '', second = ''] = kept.audits
+
+  expect(kept.audits).toHaveLength(2)
+  expect(first).toContain('CLOSED BY CLAUDE THIS TURN\ni1 Rename the branch.')
+  expect(second).toContain('CLOSED BY CLAUDE THIS TURN\nnone')
+})
+
+test('of two messages alike that wait, the one that reaches Claude joins the turn and the other waits for its own', async ($, on) => {
+  const { clock, kept } = world(on, { prompt: '{}' })
+  await start($)
+  await $.prompt.submit({ text: 'rename the branch', wait: false, origin: { kind: 'composer' } })
+  await $.turn.start({ text: 'rename the branch', turnId: 't1' })
+  await $.prompt.submit({ text: 'yes', wait: false, turnId: 't1', origin: { kind: 'composer' } })
+  await $.prompt.submit({ text: 'yes', wait: false, turnId: 't1', origin: { kind: 'composer' } })
+  await clock.advance(5)
+  await delivered($, 'yes')
+  await $.turn.complete({ answer: 'Renamed.', durationMs: 10, isAborted: false, turnId: 't1', reason: 'answer' })
+  await clock.advance(5)
+  await $.turn.start({ text: 'yes', turnId: 't2' })
+  await $.turn.complete({ answer: 'Done.', durationMs: 10, isAborted: false, turnId: 't2', reason: 'answer' })
+  await clock.advance(5)
+  const [first = '', second = ''] = kept.audits
+
+  expect(kept.audits).toHaveLength(2)
+  expect(first).toContain('[1] rename the branch\n\n[2] yes\n\nWHAT CLAUDE DID')
+  expect(second).toContain("THE USER'S MESSAGE\nyes\n\nWHAT CLAUDE DID")
+})
+
 // A fork starts under a new id with the first conversation's history, and Claude Code names no
 // parent. Each finished turn leaves a mark beside the log: the last tool call the conversation held.
 test('the end of a turn leaves a mark with the last tool call of the conversation and the count of prompts', async ($, on) => {
@@ -627,6 +730,82 @@ test('an item sent from the panel is marked as sent with what was said, until th
   expect(book().items[0]).toMatchObject({ status: 'done', closedBy: 'audit', reason: 'The reply closed it: The reply moved the scripts into tools/.' })
   expect(book().items[0]?.sent).toBe(undefined)
   expect(files[LOG]).toContain('"type":"turn"')
+})
+
+const TWO_ASKS =
+  '{"asks": [{"title": "Rename the branch", "quote": "rename the branch", "done": "The reply shows it.", "goal": null}, {"title": "Write the changelog", "quote": "write the changelog", "done": "The reply shows it.", "goal": null}]}'
+
+// No reply came, so nothing can be judged done. A close Claude made on its own word is still unread.
+test('a turn stopped after Claude closed something is audited for that close alone, and one that closed nothing is not audited', async ($, on) => {
+  const reply = '{"closed": [{"id": "i2", "how": "done", "reason": "The changelog entry is in the last commit."}], "reopened": [{"id": "i1", "why": "No command renamed the branch before the turn was stopped."}]}'
+  const { book, clock, kept } = world(on, { prompt: TWO_ASKS, reply })
+  await start($)
+  await $.prompt.submit({ text: 'rename the branch and write the changelog', wait: false, origin: { kind: 'composer' } })
+  await $.turn.start({ text: 'rename the branch and write the changelog', turnId: 't1' })
+  kept.turns = 1
+  await clock.advance(5)
+  await $.tool.call({ tool: 'mcp__inbox__inbox', action: 'close', id: 'i1', reason: 'git branch shows release.', tool_use_id: 'u1' } as never)
+  await $.turn.complete({ answer: 'Renaming', durationMs: 10, isAborted: true, turnId: 't1', reason: 'aborted' })
+  await clock.advance(5)
+
+  expect(kept.audits).toHaveLength(1)
+  expect(kept.audits[0]).toContain('CLOSED BY CLAUDE THIS TURN\ni1 Rename the branch.')
+  expect(kept.audits[0]).toContain("CLAUDE'S REPLY\nRenaming\n\n[The turn was stopped here, before Claude finished.]")
+  expect(book().items.map(item => [item.id, item.status])).toEqual([
+    ['i1', 'open'],
+    ['i2', 'open'],
+  ])
+  expect(book().items[0]?.why).toBe('No command renamed the branch before the turn was stopped.')
+
+  await $.prompt.submit({ text: 'go on', wait: false, origin: { kind: 'composer' } })
+  await $.turn.start({ text: 'go on', turnId: 't2' })
+  kept.turns = 2
+  await $.turn.complete({ answer: 'Writing', durationMs: 10, isAborted: true, turnId: 't2', reason: 'aborted' })
+  await clock.advance(5)
+
+  expect(kept.audits).toHaveLength(1)
+})
+
+test('an audit whose model call fails is asked once more, and no more than that', async ($, on) => {
+  const said: Said = { prompt: TWO_ASKS, reply: '{"closed": [{"id": "i1", "how": "done", "reason": "git branch shows release."}]}', failures: 1 }
+  const { book, clock, kept } = world(on, said)
+  await start($)
+  await exchange($, clock, 'rename the branch and write the changelog', 'Renamed.')
+
+  expect(kept.audits).toHaveLength(2)
+  expect(book().items[0]).toMatchObject({ status: 'done', closedBy: 'audit' })
+
+  said.failures = 5
+  await exchange($, clock, 'now the changelog', 'Written.')
+
+  expect(kept.audits).toHaveLength(4)
+  expect(book().items[1]).toMatchObject({ status: 'open' })
+})
+
+test('an answer sent while Claude works that does not reach it before the turn ends is kept for the turn that hears it', async ($, on) => {
+  const { book, clock, kept } = world(on, { reply: '{"closed": [{"id": "i1", "how": "done", "reason": "The reply moved the scripts into tools/."}]}' })
+  await start($)
+  await $.tool.call({ tool: 'mcp__inbox__inbox', tool_use_id: 'u1', ...FINDING })
+  await $.prompt.submit({ text: 'rename the branch', wait: false, origin: { kind: 'composer' } })
+  await $.turn.start({ text: 'rename the branch', turnId: 't1' })
+  // Sent from the panel while that turn runs: a prompt takes with it what was waiting in the prompt box.
+  const ui = await $.ui.mount({ plugin: 'inbox', surface: 'terminal', component: 'Pane', requestId: 'inbox', props: PANE, viewport: { columns: 150, rows: 50 } })
+  await ui.press({ key: 'row-i1' })
+  await ui.press({ key: 'intent-i1-0' })
+  const answer = kept.filled
+  await $.prompt.submit({ text: answer, wait: false, turnId: 't1', origin: { kind: 'composer' } })
+  await clock.advance(5)
+  await $.turn.complete({ answer: 'Renamed.', durationMs: 10, isAborted: false, turnId: 't1', reason: 'answer' })
+  await clock.advance(5)
+
+  expect(kept.audits).toHaveLength(1)
+  expect(book().items[0]).toMatchObject({ status: 'open', sent: 'Fix this now, then tell me what you changed.' })
+
+  await $.turn.start({ text: answer, turnId: 't2' })
+  await $.turn.complete({ answer: 'Moved them into tools/.', durationMs: 10, isAborted: false, turnId: 't2', reason: 'answer' })
+  await clock.advance(5)
+
+  expect(book().items[0]).toMatchObject({ status: 'done', closedBy: 'audit' })
 })
 
 test('a reload of the plugins closes the task that waited on it, and leaves the one that waits on a restart', async ($, on) => {

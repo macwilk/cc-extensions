@@ -23,6 +23,12 @@ export type Item = {
   closedBy?: Actor
   reason?: string
   closedTurn?: number
+  /**
+   * The id of the engine's turn in which Claude closed it, which is the turn whose audit reviews the
+   * close, and how many of that turn's messages had reached Claude by then.
+   */
+  closedIn?: string
+  closedHeard?: number
   /** The goal it belongs to: an ask, or a question, a task or a finding about that piece of work. */
   goal?: string
   /** A look at it in the background, running or come back. */
@@ -101,7 +107,7 @@ export type Event =
   | { type: 'turn' }
   | { type: 'goal'; goal: Goal }
   | { type: 'open'; item: Item }
-  | { type: 'close'; id: string; how: 'done' | 'dropped'; by: Actor; reason: string }
+  | { type: 'close'; id: string; how: 'done' | 'dropped'; by: Actor; reason: string; in?: string; heard?: number }
   | { type: 'later'; id: string; reason: string }
   | { type: 'reopen'; id: string }
   | { type: 'patch'; id: string; patch: Partial<Item>; drop?: (keyof Item)[] }
@@ -138,7 +144,7 @@ export type View = {
  * reply, the prompts it answered, and the tool calls made in it. With them, when the turn had any:
  * what Claude wrote before the reply, what its subagents did, and its todo list as the turn ended.
  */
-export type Pending = { id: string; answer: string; turn: { text: string; isNotice: boolean; asked: string[] }[]; did?: string[]; said?: string[]; agents?: string[]; todo?: string[] }
+export type Pending = { id: string; answer: string; turn: { text: string; isNotice: boolean; asked: string[]; answered?: string[] }[]; did?: string[]; said?: string[]; agents?: string[]; todo?: string[]; isCut?: boolean }
 
 declare module 'claude-code' {
   interface PluginState {

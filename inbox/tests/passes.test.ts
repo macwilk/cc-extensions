@@ -185,6 +185,24 @@ test('an audit leaves alone what the person answered or changed after the turn i
   ])
 })
 
+test('an ask of the person for something they dropped before opens, and their drop no longer holds anything back', async () => {
+  const ledger = ledgerOf(
+    () => ({ type: 'turn' }),
+    now => opened(now, 0, 'audit', { kind: 'ask', title: 'Add a JSON export to the report command', from: 'You', why: '', close: 'The command writes JSON.' }),
+    () => ({ type: 'close', id: 'i1', how: 'dropped', by: 'you', reason: 'You dropped it.' }),
+  )
+  const again = { title: 'Add a JSON export to the report command, with redaction', done: 'The command writes redacted JSON.', quote: 'add the JSON export after all, with redaction', goal: null }
+  const said = readPrompt(ledger, JSON.stringify({ asks: [again], answers: [], wrap: false }))
+  const after = (said ? promptEvents(ledger, said, 5).events : []).reduce(apply, ledger)
+
+  expect(ledger.dropped).toEqual(['Add a JSON export to the report command'])
+  expect(after.items.map(item => [item.id, item.status])).toEqual([
+    ['i1', 'dropped'],
+    ['i2', 'open'],
+  ])
+  expect(after.dropped).toEqual([])
+})
+
 test('the tool does not close an item the person has just answered in a message that has not reached Claude', async () => {
   const ledger = ledgerOf(
     () => ({ type: 'turn' }),

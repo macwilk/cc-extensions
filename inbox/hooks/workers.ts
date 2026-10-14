@@ -534,13 +534,15 @@ export function promptEvents(ledger: Ledger, said: PromptRead, at: number) {
   const { made, push } = builder(ledger)
   const asked: string[] = []
   for (const ask of said.asks) {
-    if (isDropped(made.now, ask.title) || isListed(made.now, ask.title)) continue
+    if (isListed(made.now, ask.title)) continue
+    // What the person dropped and now asks for again is theirs to bring back: the ask opens, and the drop is lifted.
+    const isRenewed = isDropped(made.now, ask.title)
     // A goal named by an id the ledger does not hold is a slip of the model's, not a new goal's title.
     const wanted = ask.goal !== null && /^g\d+$/.test(ask.goal) && !made.now.goals.some(goal => goal.id === ask.goal) ? null : ask.goal
     const named = made.now.goals.find(goal => goal.id === wanted || goal.title.toLowerCase() === wanted?.toLowerCase())
     const goal = wanted === null ? undefined : (named?.id ?? push(goalOpened(made.now, wanted)).goal.id)
-    const event = push(
-      opened(made.now, at, 'audit', {
+    const event = push({
+      ...opened(made.now, at, 'audit', {
         kind: 'ask',
         title: ask.title,
         from: ask.quote ? `You: "${ask.quote}"` : 'Your message.',
@@ -548,7 +550,8 @@ export function promptEvents(ledger: Ledger, said: PromptRead, at: number) {
         close: ask.done,
         ...(goal ? { goal } : {}),
       }),
-    )
+      ...(isRenewed ? { isRenewed } : {}),
+    })
     // What the person said to keep for later is set aside as it is listed, and the reply is not held to it.
     if (ask.isHeld) push({ type: 'later', id: event.item.id, reason: HELD_REASON })
     else asked.push(event.item.id)

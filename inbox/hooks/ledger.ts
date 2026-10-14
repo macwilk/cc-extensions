@@ -104,8 +104,11 @@ export function apply(ledger: Ledger, event: Event): Ledger {
       return aged(ledger)
     case 'goal':
       return { ...ledger, goals: [...ledger.goals, event.goal], nextId: Math.max(ledger.nextId, numberOf(event.goal.id) + 1) }
-    case 'open':
-      return { ...ledger, items: [...ledger.items, event.item], nextId: Math.max(ledger.nextId, numberOf(event.item.id) + 1) }
+    case 'open': {
+      const dropped = event.isRenewed ? ledger.dropped.filter(title => !isAlike(title, event.item.title)) : ledger.dropped
+
+      return { ...ledger, items: [...ledger.items, event.item], nextId: Math.max(ledger.nextId, numberOf(event.item.id) + 1), dropped }
+    }
     case 'close': {
       const item = ledger.items.find(one => one.id === event.id)
       const dropped = item && event.how === 'dropped' && event.by === 'you' ? [...ledger.dropped, item.title] : ledger.dropped

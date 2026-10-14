@@ -106,7 +106,7 @@ export type Ledger = {
 export type Event =
   | { type: 'turn' }
   | { type: 'goal'; goal: Goal }
-  | { type: 'open'; item: Item }
+  | { type: 'open'; item: Item; isRenewed?: boolean }
   | { type: 'close'; id: string; how: 'done' | 'dropped'; by: Actor; reason: string; in?: string; heard?: number }
   | { type: 'later'; id: string; reason: string }
   | { type: 'reopen'; id: string }

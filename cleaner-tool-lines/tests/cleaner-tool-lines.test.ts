@@ -909,6 +909,38 @@ test('with nothing set, collapses a spree and names its running call', async ($,
   expect(textOf(await second.drawn())).toBe('')
 })
 
+// The color of each piece of text on the first line a row draws.
+async function colorsOf(ui: Mounted): Promise<unknown[]> {
+  const line = elementsOf(await ui.drawn(), element => element.type === 'Box' && element.props?.flexDirection === 'row')[0]
+  return elementsOf(line, element => element.type === 'Text' && textOf(element) !== '').map(element => element.props?.color)
+}
+
+test('with graying set on, a closed call is gray but for its dot, and an open one keeps its colors', { options: { grayscale: true } }, async ($, on) => {
+  drawEngineRows(on)
+  const ui = await mountRow($, { ...BASH, isErrored: true, output: 'Exit code 1' })
+
+  expect(await lineOf(ui)).toBe('▸ tool_call: Bash(cat a.txt b.txt) - error')
+  expect(await colorsOf(ui)).toEqual(['error', 'inactive', 'inactive', 'inactive', 'inactive'])
+
+  await ui.press({ key: 'toggle' })
+  expect(await colorsOf(ui)).toEqual(['error', 'inactive', undefined, 'error'])
+})
+
+test('with graying set on, a folded spree is gray but for its dot, and an open one keeps its colors', { options: { grayscale: true, showRunning: false } }, async ($, on) => {
+  drawEngineRows(on)
+  claudeWorks(on, [[begins(LS)], [begins(TESTS)]])
+  for (const index of [0, 1]) await request($, index)
+  const first = await mountRow($, LS)
+  await mountRow($, TESTS)
+  for (const made of [LS, TESTS]) await runCall($, made)
+
+  expect(await lineOf(first)).toBe('▸ 2 tool_calls: 2 Bash - 1 failed')
+  expect(await colorsOf(first)).toEqual(['error', 'inactive', 'inactive', 'inactive'])
+
+  await first.press({ key: 'spree' })
+  expect(await colorsOf(first)).toEqual(['error', 'inactive', 'error'])
+})
+
 // MARK: Views the mod stays out of
 
 test('leaves every tool row to Claude Code while the full transcript is open', async ($, on) => {

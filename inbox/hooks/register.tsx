@@ -1090,8 +1090,9 @@ export const register: Register = (on, options) => {
       // A subagent of Claude's that ended: its last words are its report, and the item that listed it as running closes.
       const helper = passes.agents.get(agent)
       if (helper) {
-        // Audited once, at the end of its first run: a subagent sent a further message runs again.
-        if (passes.depth.isAuditingAgents && !helper.isDone) queued($, () => agentPass($, agent, { ...helper }, [...helper.calls], e.answer))
+        // Audited once, at the end of its first run: a subagent sent a further message runs again. A
+        // workflow's agent reports to the workflow, whose own report is what the reply pass reads.
+        if (passes.depth.isAuditingAgents && !helper.isDone && !helper.isInWorkflow) queued($, () => agentPass($, agent, { ...helper }, [...helper.calls], e.answer))
         Object.assign(helper, { isDone: true, report: e.answer })
         await record($, now => now.items.filter(one => one.kind === 'running' && one.status === 'open' && one.key === agent).map(one => ({ type: 'close', id: one.id, how: 'done', by: 'engine', reason: 'The subagent ended.' })))
       }

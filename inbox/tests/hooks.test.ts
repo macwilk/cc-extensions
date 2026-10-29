@@ -957,3 +957,15 @@ test('a resumed conversation gets its inbox back from the log, and what waited o
   expect(book().items[0]?.reason).toBe('Claude Code was started again.')
   expect([book().turn, book().nextId]).toEqual([1, 3])
 })
+
+test("a workflow's agent is not audited on its own, as its report goes to the workflow and not to the conversation", { options: { depth: 'Exhaustive' } }, async ($, on) => {
+  const step = JSON.stringify({ open: [{ kind: 'issue', title: 'The agent that ran step 3 hid a failed lint run', from: 'A subagent I started reported: "lint clean"', why: 'The lint call exited 1.', close: 'Rerun lint.' }] })
+  const { book, clock } = world(on, { reply: step })
+  on('agent.spawn', async () => ({ model: 'sonnet', agentId: 'a1' }))
+  await start($)
+  await $.agent.spawn({ tool_use_id: 'u1', prompt: 'Lint step 3.', description: 'step 3', subagentType: 'workflow-subagent', parentModel: 'opus', background: true, fork: false, workflow: { runId: 'wf_1', agentIndex: 1 } } as never)
+  await $.turn.complete({ answer: 'lint clean', durationMs: 5, isAborted: false, turnId: 'ta', agentId: 'a1', reason: 'answer' })
+  await clock.advance(5)
+
+  expect(book().items.filter(item => item.by === 'audit')).toEqual([])
+})

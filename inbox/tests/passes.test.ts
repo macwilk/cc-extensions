@@ -2,7 +2,7 @@ import { expect, test } from 'claude-code/testing'
 
 import { RULE, draftOf, sayOf, sentOf } from '../hooks/capture'
 import { EMPTY, apply, goalOpened, opened } from '../hooks/ledger'
-import { checkOf, leftQuestions } from '../hooks/signals'
+import { checkKey, checkOf, leftQuestions } from '../hooks/signals'
 import { RECORDS_PER_TURN, answerTool } from '../hooks/tool'
 import { ASKS_PER_PROMPT, DEPTHS, agentAsk, agentEvents, agentPart, didLines, readAgent, readAt, jsonOf, lastReplyOf, promptAsk, promptEvents, readPrompt, readReply, replyAsk, replyEvents, saidOf, todoOf, toolLine, useOf } from '../hooks/workers'
 import type { Event, Ledger } from '../types'
@@ -22,6 +22,15 @@ test('a command is a check only when its exit status is its own', async () => {
   expect(checkOf('npm test | tail -5')).toBe(null)
   expect(checkOf('pytest tests/unit 2>&1')).toBe('pytest tests/unit 2>&1')
   expect(checkOf('git status')).toBe(null)
+})
+
+test('a check is known by its folder and command, however its env vars, cd separator or 2>&1 are spelled', async () => {
+  expect(checkKey('CI=1 npm test')).toBe('npm test')
+  expect(checkKey('npm test 2>&1')).toBe('npm test')
+  expect(checkKey('cd app; npm test')).toBe(checkKey('cd app && npm test'))
+  expect(checkKey('cd app;npm test')).toBe(checkKey('cd app && npm test'))
+  expect(checkKey('cd app && npm test')).not.toBe(checkKey('cd lib && npm test'))
+  expect(checkKey('pytest -k "x 2>&1"')).toBe('pytest -k "x 2>&1"')
 })
 
 test('a dialog left through Chat about this gives each unanswered question as an item with its answers', async () => {

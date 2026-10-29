@@ -9,7 +9,7 @@ import type { Check, Event, Item, Kind, Ledger, Pending, Running, View } from '.
 import { SECTION_NAME, clip, draftOf, linesOf, nameOf, sayOf, sentOf, without, wrapped, type Decoration } from './capture'
 import { AGENT_SPEC, AGENT_TYPE, ASK_AGAIN_AFTER, CHECKS_AT_ONCE, HAND_BACK, RECEIVED, STOPPED, canCheck, checkAsk, checkBack, checkDismissed, checkLost, ranLine, sayOfCheck, stepsOf, withRan } from './checks'
 import { EMPTY, ageOf, apply, carriedTo, forkPoint, layoutOf, marksOf, needsYou, opened, progressOf, rebased, replay, rewoundTo, sectionsOf, type GoalBlock, type Section } from './ledger'
-import { checkOf, failedCheck, leftQuestions } from './signals'
+import { checkKey, checkOf, failedCheck, leftQuestions } from './signals'
 import { TOOL_DESCRIPTION, TOOL_NAME, TOOL_SCHEMA, answerTool } from './tool'
 import { AGENT_OPENS_PER_PROMPT, AGENT_RULES, BY_REPLY, PROMPT_RULES, REPLY_RULES, agentAsk, agentEvents, agentPart, closedByClaude, didLines, forkAsk, lastReplyOf, newest, promptAsk, promptEvents, readAgent, readAt, readFork, readPrompt, readReply, replyAsk, replyEvents, saidOf, todoOf, toolLine, toolLines, useOf, type Beside, type Message, type Subagent } from './workers'
 
@@ -633,7 +633,7 @@ function copyText($: EngineInterface, text: string, what: string) {
 async function followCheck($: EngineInterface, command: string, hasFailed: boolean, output: string) {
   const at = await $.clock.now()
   await record($, now => {
-    const open = now.items.filter(item => item.kind === 'check' && item.key === command && item.status === 'open')
+    const open = now.items.filter(item => item.kind === 'check' && item.key !== undefined && checkKey(item.key) === checkKey(command) && item.status === 'open')
     if (hasFailed) return open.length > 0 ? [] : [opened(now, at, 'engine', failedCheck(command, output))]
 
     return open.map(item => ({ type: 'close', id: item.id, how: 'done', by: 'engine', reason: 'The same check ran again and passed.' }))

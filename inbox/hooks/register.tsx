@@ -980,9 +980,10 @@ export const register: Register = (on, options) => {
 
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
     const answer = await next(e)
-    // A command an agent of the mod's runs to check something is not the conversation's: its failing test is no item.
-    const agent = (e as { agentId?: string }).agentId
-    if (agent !== undefined && (await viewOf($)).agents.includes(agent)) return answer
+    // A subagent's command is not the conversation's, the mod's own checkers' included: the notice that
+    // a background one ended goes to that subagent, which takes the command down with it when it ends,
+    // and the conversation never reruns its failed check, so an item for either would never close.
+    if ((e as { agentId?: string }).agentId !== undefined) return answer
     const check = checkOf(e.command)
     const said = answer as { isError?: boolean; text?: string; deny?: string; result?: { interrupted?: boolean; backgroundTaskId?: string } }
     const task = said.result?.backgroundTaskId

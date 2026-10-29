@@ -291,6 +291,44 @@ test('a command left running in the background is an item until the task is stop
   expect(book().items[0]).toMatchObject({ status: 'done', closedBy: 'engine', reason: 'The task was stopped.' })
 })
 
+test("a subagent's command left running in the background is no item, as its end never reaches the conversation", async ($, on) => {
+  const { book, clock } = world(on)
+  on('tool.call', { tool: 'Bash' }, async () => ({ result: { stdout: '', stderr: '', interrupted: false, backgroundTaskId: 'b1' }, text: 'Running in the background.' }))
+  on('agent.spawn', async () => ({ model: 'sonnet', agentId: 'a1' }))
+  await start($)
+  await $.turn.start({ text: 'go', turnId: 't1' })
+  await $.agent.spawn({ tool_use_id: 'u1', prompt: 'Serve it.', description: 'server', subagentType: 'general-purpose', parentModel: 'opus', background: false, fork: false } as never)
+  await $.tool.call({ tool: 'Bash', command: 'npm run dev', description: 'Start the dev server', run_in_background: true, tool_use_id: 'u2', agentId: 'a1' } as never)
+  await $.turn.complete({ answer: 'Started.', durationMs: 5, isAborted: false, turnId: 'ta', agentId: 'a1', reason: 'answer' })
+  await clock.settle()
+
+  expect(book().items.filter(item => item.key === 'b1')).toEqual([])
+})
+
+test("a workflow agent's command left running in the background is no item either", async ($, on) => {
+  const { book, clock } = world(on)
+  on('tool.call', { tool: 'Bash' }, async () => ({ result: { stdout: '', stderr: '', interrupted: false, backgroundTaskId: 'b1' }, text: 'Running in the background.' }))
+  on('agent.spawn', async () => ({ model: 'sonnet', agentId: 'a1' }))
+  await start($)
+  await $.agent.spawn({ tool_use_id: 'u1', prompt: 'Sweep it.', description: 'alpha', subagentType: 'workflow-subagent', parentModel: 'opus', background: true, fork: false, workflow: { runId: 'wf_1', agentIndex: 1 } } as never)
+  await $.tool.call({ tool: 'Bash', command: 'sleep 99', run_in_background: true, tool_use_id: 'u2', agentId: 'a1' } as never)
+  await clock.settle()
+
+  expect(book().items.filter(item => item.key === 'b1')).toEqual([])
+})
+
+test("a subagent's failed check is no item, as the conversation never reruns it", async ($, on) => {
+  const { book, clock } = world(on)
+  on('tool.call', { tool: 'Bash' }, async () => ({ result: { stdout: '', stderr: '', interrupted: false }, text: 'Exit code 1\n1 failed', isError: true }))
+  on('agent.spawn', async () => ({ model: 'sonnet', agentId: 'a1' }))
+  await start($)
+  await $.agent.spawn({ tool_use_id: 'u1', prompt: 'Break each line and run the tests.', description: 'mutation sweep', subagentType: 'general-purpose', parentModel: 'opus', background: false, fork: false } as never)
+  await $.tool.call({ tool: 'Bash', command: 'npm test', tool_use_id: 'u2', agentId: 'a1' } as never)
+  await clock.settle()
+
+  expect(book().items.filter(item => item.kind === 'check')).toEqual([])
+})
+
 test('a dialog left with questions unanswered leaves each as an item with its answers', async ($, on) => {
   const { book, clock } = world(on)
   on('tool.call', { tool: 'AskUserQuestion' }, async () => ({

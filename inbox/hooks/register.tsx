@@ -325,9 +325,11 @@ async function restore($: EngineInterface) {
     log.marks = moved.map(one => `${one.call} ${one.turn} ${one.turns}\n`).join('')
     await $.fs.write(`${log.base}.marks`, log.marks)
   }
+  // A task the old process ran in the background can neither send this one its notice of the end nor
+  // be stopped from it, so its item would never close.
   await record($, now =>
     now.items
-      .filter(item => item.status === 'open' && (item.closesOn === 'reload' || (isRestart && item.closesOn === 'restart')))
+      .filter(item => item.status === 'open' && (item.closesOn === 'reload' || (isRestart && (item.closesOn === 'restart' || item.kind === 'running'))))
       .map(item => ({ type: 'close', id: item.id, how: 'done', by: 'engine', reason: isRestart ? 'Claude Code was started again.' : 'The plugins were reloaded.' })),
   )
 }

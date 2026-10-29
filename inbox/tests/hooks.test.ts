@@ -969,3 +969,36 @@ test("a workflow's agent is not audited on its own, as its report goes to the wo
 
   expect(book().items.filter(item => item.by === 'audit')).toEqual([])
 })
+
+test('a resumed conversation closes what ran in the background, as its tasks went with the old process', async ($, on) => {
+  const running = { kind: 'running', from: 'Claude started it in the background.', why: '', close: 'It ends by itself, or you ask Claude to stop it.', selfCloses: 'When the task ends.', turn: 1, at: 5, by: 'engine', status: 'open' }
+  const log = [
+    { type: 'turn' },
+    { type: 'open', item: { ...running, id: 'i1', title: 'Start the dev server', key: 'b1' } },
+    { type: 'open', item: { ...running, id: 'i2', title: 'Workflow: survey', key: 'w1' } },
+    { type: 'open', item: { ...running, id: 'i3', title: 'scout', key: 'a1' } },
+    { type: 'open', item: { kind: 'issue', title: 'Demo scripts live only in a temp folder', from: 'Claude', why: '', close: '', turn: 1, at: 5, by: 'claude', status: 'open', id: 'i4' } },
+  ]
+  const { book, clock } = world(on, {}, { [LOG]: `${log.map(line => JSON.stringify({ at: 5, turn: 1, ...line })).join('\n')}\n` })
+  await start($)
+  await clock.settle()
+
+  expect(book().items.map(one => [one.id, one.status, one.reason])).toEqual([
+    ['i1', 'done', 'Claude Code was started again.'],
+    ['i2', 'done', 'Claude Code was started again.'],
+    ['i3', 'done', 'Claude Code was started again.'],
+    ['i4', 'open', undefined],
+  ])
+})
+
+test('a reload of the plugins leaves what runs in the background open, as its task is still running', async ($, on) => {
+  const { book, clock } = world(on)
+  on('tool.call', { tool: 'Bash' }, async () => ({ result: { stdout: '', stderr: '', interrupted: false, backgroundTaskId: 'b1' }, text: 'Running in the background.' }))
+  await start($)
+  await $.tool.call({ tool: 'Bash', command: 'npm run dev', description: 'Start the dev server', run_in_background: true, tool_use_id: 'u1' })
+  await clock.settle()
+  await start($)
+  await clock.settle()
+
+  expect(book().items.map(one => [one.key, one.status])).toEqual([['b1', 'open']])
+})

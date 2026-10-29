@@ -291,6 +291,44 @@ test('a command left running in the background is an item until the task is stop
   expect(book().items[0]).toMatchObject({ status: 'done', closedBy: 'engine', reason: 'The task was stopped.' })
 })
 
+test("a subagent's command left running in the background is no item, as its end never reaches the conversation", async ($, on) => {
+  const { book, clock } = world(on)
+  on('tool.call', { tool: 'Bash' }, async () => ({ result: { stdout: '', stderr: '', interrupted: false, backgroundTaskId: 'b1' }, text: 'Running in the background.' }))
+  on('agent.spawn', async () => ({ model: 'sonnet', agentId: 'a1' }))
+  await start($)
+  await $.turn.start({ text: 'go', turnId: 't1' })
+  await $.agent.spawn({ tool_use_id: 'u1', prompt: 'Serve it.', description: 'server', subagentType: 'general-purpose', parentModel: 'opus', background: false, fork: false } as never)
+  await $.tool.call({ tool: 'Bash', command: 'npm run dev', description: 'Start the dev server', run_in_background: true, tool_use_id: 'u2', agentId: 'a1' } as never)
+  await $.turn.complete({ answer: 'Started.', durationMs: 5, isAborted: false, turnId: 'ta', agentId: 'a1', reason: 'answer' })
+  await clock.settle()
+
+  expect(book().items.filter(item => item.key === 'b1')).toEqual([])
+})
+
+test("a workflow agent's command left running in the background is no item either", async ($, on) => {
+  const { book, clock } = world(on)
+  on('tool.call', { tool: 'Bash' }, async () => ({ result: { stdout: '', stderr: '', interrupted: false, backgroundTaskId: 'b1' }, text: 'Running in the background.' }))
+  on('agent.spawn', async () => ({ model: 'sonnet', agentId: 'a1' }))
+  await start($)
+  await $.agent.spawn({ tool_use_id: 'u1', prompt: 'Sweep it.', description: 'alpha', subagentType: 'workflow-subagent', parentModel: 'opus', background: true, fork: false, workflow: { runId: 'wf_1', agentIndex: 1 } } as never)
+  await $.tool.call({ tool: 'Bash', command: 'sleep 99', run_in_background: true, tool_use_id: 'u2', agentId: 'a1' } as never)
+  await clock.settle()
+
+  expect(book().items.filter(item => item.key === 'b1')).toEqual([])
+})
+
+test("a subagent's failed check is no item, as the conversation never reruns it", async ($, on) => {
+  const { book, clock } = world(on)
+  on('tool.call', { tool: 'Bash' }, async () => ({ result: { stdout: '', stderr: '', interrupted: false }, text: 'Exit code 1\n1 failed', isError: true }))
+  on('agent.spawn', async () => ({ model: 'sonnet', agentId: 'a1' }))
+  await start($)
+  await $.agent.spawn({ tool_use_id: 'u1', prompt: 'Break each line and run the tests.', description: 'mutation sweep', subagentType: 'general-purpose', parentModel: 'opus', background: false, fork: false } as never)
+  await $.tool.call({ tool: 'Bash', command: 'npm test', tool_use_id: 'u2', agentId: 'a1' } as never)
+  await clock.settle()
+
+  expect(book().items.filter(item => item.kind === 'check')).toEqual([])
+})
+
 test('a dialog left with questions unanswered leaves each as an item with its answers', async ($, on) => {
   const { book, clock } = world(on)
   on('tool.call', { tool: 'AskUserQuestion' }, async () => ({
@@ -918,4 +956,83 @@ test('a resumed conversation gets its inbox back from the log, and what waited o
   ])
   expect(book().items[0]?.reason).toBe('Claude Code was started again.')
   expect([book().turn, book().nextId]).toEqual([1, 3])
+})
+
+test("a workflow's agent is not audited on its own, as its report goes to the workflow and not to the conversation", { options: { depth: 'Exhaustive' } }, async ($, on) => {
+  const step = JSON.stringify({ open: [{ kind: 'issue', title: 'The agent that ran step 3 hid a failed lint run', from: 'A subagent I started reported: "lint clean"', why: 'The lint call exited 1.', close: 'Rerun lint.' }] })
+  const { book, clock } = world(on, { reply: step })
+  on('agent.spawn', async () => ({ model: 'sonnet', agentId: 'a1' }))
+  await start($)
+  await $.agent.spawn({ tool_use_id: 'u1', prompt: 'Lint step 3.', description: 'step 3', subagentType: 'workflow-subagent', parentModel: 'opus', background: true, fork: false, workflow: { runId: 'wf_1', agentIndex: 1 } } as never)
+  await $.turn.complete({ answer: 'lint clean', durationMs: 5, isAborted: false, turnId: 'ta', agentId: 'a1', reason: 'answer' })
+  await clock.advance(5)
+
+  expect(book().items.filter(item => item.by === 'audit')).toEqual([])
+})
+
+test('a resumed conversation closes what ran in the background, as its tasks went with the old process', async ($, on) => {
+  const running = { kind: 'running', from: 'Claude started it in the background.', why: '', close: 'It ends by itself, or you ask Claude to stop it.', selfCloses: 'When the task ends.', turn: 1, at: 5, by: 'engine', status: 'open' }
+  const log = [
+    { type: 'turn' },
+    { type: 'open', item: { ...running, id: 'i1', title: 'Start the dev server', key: 'b1' } },
+    { type: 'open', item: { ...running, id: 'i2', title: 'Workflow: survey', key: 'w1' } },
+    { type: 'open', item: { ...running, id: 'i3', title: 'scout', key: 'a1' } },
+    { type: 'open', item: { kind: 'issue', title: 'Demo scripts live only in a temp folder', from: 'Claude', why: '', close: '', turn: 1, at: 5, by: 'claude', status: 'open', id: 'i4' } },
+  ]
+  const { book, clock } = world(on, {}, { [LOG]: `${log.map(line => JSON.stringify({ at: 5, turn: 1, ...line })).join('\n')}\n` })
+  await start($)
+  await clock.settle()
+
+  expect(book().items.map(one => [one.id, one.status, one.reason])).toEqual([
+    ['i1', 'done', 'Claude Code was started again.'],
+    ['i2', 'done', 'Claude Code was started again.'],
+    ['i3', 'done', 'Claude Code was started again.'],
+    ['i4', 'open', undefined],
+  ])
+})
+
+test('a reload of the plugins leaves what runs in the background open, as its task is still running', async ($, on) => {
+  const { book, clock } = world(on)
+  on('tool.call', { tool: 'Bash' }, async () => ({ result: { stdout: '', stderr: '', interrupted: false, backgroundTaskId: 'b1' }, text: 'Running in the background.' }))
+  await start($)
+  await $.tool.call({ tool: 'Bash', command: 'npm run dev', description: 'Start the dev server', run_in_background: true, tool_use_id: 'u1' })
+  await clock.settle()
+  await start($)
+  await clock.settle()
+
+  expect(book().items.map(one => [one.key, one.status])).toEqual([['b1', 'open']])
+})
+
+test('a failed check is closed by a passing rerun that only sets env vars or folds stderr in, and not by one in another folder', async ($, on) => {
+  const { book, clock } = world(on)
+  const run = { hasFailed: true }
+  on('tool.call', { tool: 'Bash' }, async () => ({ result: { stdout: '', stderr: '', interrupted: false }, text: run.hasFailed ? 'Exit code 1\n1 failed' : '1 passed', ...(run.hasFailed ? { isError: true } : {}) }))
+  await start($)
+  const left: [string, number][] = []
+  for (const [at, rerun] of ['CI=1 npm test', 'npm test 2>&1', 'cd app && npm test'].entries()) {
+    run.hasFailed = true
+    await $.tool.call({ tool: 'Bash', command: 'npm test', tool_use_id: `f${at}` })
+    await clock.settle()
+    run.hasFailed = false
+    await $.tool.call({ tool: 'Bash', command: rerun, tool_use_id: `p${at}` })
+    await clock.settle()
+    left.push([rerun, book().items.filter(item => item.kind === 'check' && item.status === 'open').length])
+  }
+
+  expect(left).toEqual([
+    ['CI=1 npm test', 0],
+    ['npm test 2>&1', 0],
+    ['cd app && npm test', 1],
+  ])
+})
+
+test('a failed check kept from before by its whole command line still closes on the same passing rerun', async ($, on) => {
+  const check = { kind: 'check', title: 'Failed: CI=1 npm test', from: 'The command itself: CI=1 npm test ended with an error.', why: '1 failed', close: 'A fix, and a run of the same check that passes.', command: 'CI=1 npm test', key: 'CI=1 npm test', selfCloses: 'When the same check next runs and passes.', turn: 1, at: 5, by: 'engine', status: 'open', id: 'i1' }
+  const { book, clock } = world(on, {}, { [LOG]: `${[{ type: 'turn' }, { type: 'open', item: check }].map(line => JSON.stringify({ at: 5, turn: 1, ...line })).join('\n')}\n` })
+  on('tool.call', { tool: 'Bash' }, async () => ({ result: { stdout: '', stderr: '', interrupted: false }, text: '1 passed' }))
+  await start($)
+  await $.tool.call({ tool: 'Bash', command: 'CI=1 npm test', tool_use_id: 'u1' })
+  await clock.settle()
+
+  expect(book().items.map(one => [one.id, one.status])).toEqual([['i1', 'done']])
 })

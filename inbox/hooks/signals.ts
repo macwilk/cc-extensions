@@ -31,6 +31,19 @@ export function checkOf(command: string) {
   return CHECKS.some(check => check.test(run)) ? line : null
 }
 
+/**
+ * What a check is known by, so that a passing rerun closes it: its name less the env vars set before
+ * its command, a `2>&1` of its own, and how it moves to a folder, none of which change what runs or
+ * what passing means. The folder stays, as a check in another folder is another check.
+ */
+export function checkKey(check: string) {
+  const moves = /^(cd \S+ ?(&&|;) ?)*/.exec(check)?.[0] ?? ''
+  const folders = [...moves.matchAll(/cd (\S+?) ?(?:&&|;)/g)].map(move => `cd ${move[1]} && `).join('')
+  const run = check.slice(moves.length).replace(/^([A-Z_]+=\S+ )+/, '').replace(/ 2>&1(?= |$)/g, '')
+
+  return `${folders}${run}`.trim()
+}
+
 /** A failed check as a new item: what failed, the end of what it printed, and how it closes. */
 export function failedCheck(command: string, output: string): Fields {
   const lines = output
@@ -46,7 +59,7 @@ export function failedCheck(command: string, output: string): Fields {
     why: lines.slice(-4).join(' ').slice(0, 400) || 'It printed nothing.',
     close: 'A fix, and a run of the same check that passes.',
     command,
-    key: command,
+    key: checkKey(command),
     selfCloses: 'When the same check next runs and passes.',
   }
 }

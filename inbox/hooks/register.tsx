@@ -9,7 +9,7 @@ import type { Check, Event, Item, Kind, Ledger, Pending, Running, View } from '.
 import { SECTION_NAME, clip, draftOf, linesOf, nameOf, sayOf, sentOf, without, wrapped, type Decoration } from './capture'
 import { AGENT_SPEC, AGENT_TYPE, ASK_AGAIN_AFTER, CHECKS_AT_ONCE, HAND_BACK, RECEIVED, STOPPED, canCheck, checkAsk, checkBack, checkDismissed, checkLost, ranLine, sayOfCheck, stepsOf, withRan } from './checks'
 import { EMPTY, ageOf, apply, carriedTo, forkPoint, layoutOf, marksOf, needsYou, opened, progressOf, rebased, replay, rewoundTo, sectionsOf, type GoalBlock, type Section } from './ledger'
-import { checkOf, failedCheck, leftQuestions } from './signals'
+import { checkKey, checkOf, failedCheck, leftQuestions } from './signals'
 import { TOOL_DESCRIPTION, TOOL_NAME, TOOL_SCHEMA, answerTool } from './tool'
 import { AGENT_OPENS_PER_PROMPT, AGENT_RULES, BY_REPLY, PROMPT_RULES, REPLY_RULES, agentAsk, agentEvents, agentPart, closedByClaude, didLines, forkAsk, lastReplyOf, newest, promptAsk, promptEvents, readAgent, readAt, readFork, readPrompt, readReply, replyAsk, replyEvents, saidOf, todoOf, toolLine, toolLines, useOf, type Beside, type Message, type Subagent } from './workers'
 
@@ -325,9 +325,11 @@ async function restore($: EngineInterface) {
     log.marks = moved.map(one => `${one.call} ${one.turn} ${one.turns}\n`).join('')
     await $.fs.write(`${log.base}.marks`, log.marks)
   }
+  // A task the old process ran in the background can neither send this one its notice of the end nor
+  // be stopped from it, so its item would never close.
   await record($, now =>
     now.items
-      .filter(item => item.status === 'open' && (item.closesOn === 'reload' || (isRestart && item.closesOn === 'restart')))
+      .filter(item => item.status === 'open' && (item.closesOn === 'reload' || (isRestart && (item.closesOn === 'restart' || item.kind === 'running'))))
       .map(item => ({ type: 'close', id: item.id, how: 'done', by: 'engine', reason: isRestart ? 'Claude Code was started again.' : 'The plugins were reloaded.' })),
   )
 }
@@ -631,7 +633,7 @@ function copyText($: EngineInterface, text: string, what: string) {
 async function followCheck($: EngineInterface, command: string, hasFailed: boolean, output: string) {
   const at = await $.clock.now()
   await record($, now => {
-    const open = now.items.filter(item => item.kind === 'check' && item.key === command && item.status === 'open')
+    const open = now.items.filter(item => item.kind === 'check' && item.key !== undefined && checkKey(item.key) === checkKey(command) && item.status === 'open')
     if (hasFailed) return open.length > 0 ? [] : [opened(now, at, 'engine', failedCheck(command, output))]
 
     return open.map(item => ({ type: 'close', id: item.id, how: 'done', by: 'engine', reason: 'The same check ran again and passed.' }))
@@ -980,9 +982,10 @@ export const register: Register = (on, options) => {
 
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
     const answer = await next(e)
-    // A command an agent of the mod's runs to check something is not the conversation's: its failing test is no item.
-    const agent = (e as { agentId?: string }).agentId
-    if (agent !== undefined && (await viewOf($)).agents.includes(agent)) return answer
+    // A subagent's command is not the conversation's, the mod's own checkers' included: the notice that
+    // a background one ended goes to that subagent, which takes the command down with it when it ends,
+    // and the conversation never reruns its failed check, so an item for either would never close.
+    if ((e as { agentId?: string }).agentId !== undefined) return answer
     const check = checkOf(e.command)
     const said = answer as { isError?: boolean; text?: string; deny?: string; result?: { interrupted?: boolean; backgroundTaskId?: string } }
     const task = said.result?.backgroundTaskId
@@ -1089,8 +1092,9 @@ export const register: Register = (on, options) => {
       // A subagent of Claude's that ended: its last words are its report, and the item that listed it as running closes.
       const helper = passes.agents.get(agent)
       if (helper) {
-        // Audited once, at the end of its first run: a subagent sent a further message runs again.
-        if (passes.depth.isAuditingAgents && !helper.isDone) queued($, () => agentPass($, agent, { ...helper }, [...helper.calls], e.answer))
+        // Audited once, at the end of its first run: a subagent sent a further message runs again. A
+        // workflow's agent reports to the workflow, whose own report is what the reply pass reads.
+        if (passes.depth.isAuditingAgents && !helper.isDone && !helper.isInWorkflow) queued($, () => agentPass($, agent, { ...helper }, [...helper.calls], e.answer))
         Object.assign(helper, { isDone: true, report: e.answer })
         await record($, now => now.items.filter(one => one.kind === 'running' && one.status === 'open' && one.key === agent).map(one => ({ type: 'close', id: one.id, how: 'done', by: 'engine', reason: 'The subagent ended.' })))
       }

@@ -46,7 +46,8 @@ line mean, see the [`cleaner-tool-lines` README](cleaner-tool-lines/README.md).
 ## restyled-chat
 
 Adds color themes. Draws each code block in a reply as a shaded block with a copy button, and colors
-the code as VS Code colors it under the same theme.
+the code as VS Code colors it under the same theme. A quote or a table gets a copy icon beside it,
+and a table can be copied as markdown, TSV or CSV.
 
 <p>
   <img src="media/restyled-chat-before.png" alt="A prompt, an edit and a reply with a code block, in the dark theme of Claude Code with no mod" width="49%">

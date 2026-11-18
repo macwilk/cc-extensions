@@ -2,8 +2,9 @@ import { atom, memberOf, read, update } from 'claude-code'
 import type { Register, RenderSurface } from 'claude-code'
 
 import { diffLinesOf, type DiffLine } from './diff'
-import { segmentsOf } from './segments'
+import { segmentsOf, unquoted } from './segments'
 import { linesOf, themeFor, type Read, type Run } from './shiki'
+import { csvOf, tsvOf } from './table'
 
 // Claude Code sets a reply two cells in, under its bullet.
 const INDENT = 2
@@ -23,6 +24,17 @@ const DIFF_SHADE = { added: 'diffAdded', removed: 'diffRemoved' } as const
 // A reply of no visible text. Asked to draw it, Claude Code draws the row's bullet, indent and top
 // margin and nothing else, and the mod sets its own drawing on that row.
 const EMPTY_REPLY = '​'
+const COPY_ICON = '⧉'
+const COPIED_ICON = '✓'
+// Many terminal fonts lack the icon and draw it from a fallback font, wider than a cell. A space after
+// it gives it two cells, so the shade the pointer inverts a button to covers the whole icon.
+const GUTTER_LABEL = `${COPY_ICON} `
+// The forms a table is copied in, each by a button of its own under it.
+const TABLE_FORMS = [
+  { name: 'markdown', of: (source: string) => source },
+  { name: 'tsv', of: tsvOf },
+  { name: 'csv', of: csvOf },
+] as const
 
 const isPlain = ({ text: _, ...style }: Run) => Object.keys(style).length === 0
 
@@ -36,7 +48,7 @@ export const register: Register = on => {
     // A summary keeps Claude Code's own mark, which a drawing of the mod's would drop.
     if (e.surface !== 'terminal' || e.props.isSummary) return next(e)
     const segments = segmentsOf(e.props.text)
-    if (!segments.some(segment => segment.kind === 'code')) return next(e)
+    if (segments.every(segment => segment.kind === 'prose')) return next(e)
 
     const { Box, Text, Button, Markdown, Code } = $.ui.resolve(e)
     const mine = memberOf(copiedBlock, e)
@@ -130,6 +142,41 @@ export const register: Register = on => {
         ],
       })
 
+    // A copy button of a quote or a table: dim, lit while the pointer is on its block, and green with a
+    // check once its copy took.
+    const quietCopyButton = (source: string, key: string, label: string) =>
+      Button({
+        key,
+        plain: true,
+        onPress: press => void copy(source, key, press.surface),
+        children: [
+          copied === key
+            ? Text({ color: 'success', children: [label.replace(COPY_ICON, COPIED_ICON)] })
+            : Text({ color: 'inactive', hover: { color: 'suggestion' }, children: [label] }),
+        ],
+      })
+    // A quote or a table keeps Claude Code's own drawing of it. Its copy button sits in the columns
+    // left of the reply where Claude Code draws the bullet that opens a reply, so it takes no room; on
+    // the bullet's own row it moves down one. Under a table, a button for each form it copies in.
+    const copyableBlock = (source: string, copyText: string, key: string, isOnBulletRow: boolean, isTable: boolean) =>
+      Box({
+        key: `block-${key}`,
+        flexDirection: 'column',
+        children: [
+          Markdown({ text: source }),
+          Box({ position: 'absolute', top: isOnBulletRow ? 1 : 0, left: -INDENT, children: [quietCopyButton(copyText, key, GUTTER_LABEL)] }),
+          ...(isTable
+            ? [
+                Box({
+                  flexDirection: 'row',
+                  gap: 3,
+                  children: TABLE_FORMS.map(form => quietCopyButton(form.of(source), `${key}-${form.name}`, `${COPY_ICON} ${form.name}`)),
+                }),
+              ]
+            : []),
+        ],
+      })
+
     const row = await next({ ...e, props: { ...e.props, text: EMPTY_REPLY } })
     // In the order written, so the blocks of a reply take their share of the nodes in that order.
     const parts = []
@@ -141,6 +188,12 @@ export const register: Register = on => {
       }
       // The button of a block is told from the others of the reply by the block's place among them.
       const key = `copy-${blocks++}`
+      if (segment.kind === 'quote' || segment.kind === 'table') {
+        const isOnBulletRow = e.props.isFirstOfReply && segment === segments[0]
+        const isTable = segment.kind === 'table'
+        parts.push(copyableBlock(segment.source, isTable ? segment.source : unquoted(segment.source), key, isOnBulletRow, isTable))
+        continue
+      }
       const diff = DIFF_LANGUAGES.includes(segment.language ?? '') ? diffLinesOf(segment.source) : undefined
       parts.push(
         diff !== undefined && takes(diff.length * DIFF_ROW_NODES)

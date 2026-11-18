@@ -5,6 +5,10 @@ The `restyled-chat` mod changes how the Claude Code terminal looks:
 - It adds color themes.
 - It draws each fenced code block in a reply as one full-width shaded block. The first row of the
   block shows the language and a **copy** button.
+- It puts a copy icon, `⧉`, beside each quote and each table in a reply, in the column of the
+  reply's bullet. A quote is copied without its `>` markers, and a table as its markdown.
+- It puts a **markdown**, a **tsv** and a **csv** button under each table. TSV pastes into a
+  spreadsheet as cells.
 - It colors the code in a block as VS Code colors it under the same theme, and a `diff` block from
   the diff colors of the theme.
 

@@ -2,7 +2,7 @@ import { expect, mock, test, type TestBody } from 'claude-code/testing'
 
 type Engine = Parameters<TestBody>[0]
 type On = Parameters<TestBody>[1]
-type Drawn = { type?: string; props?: Record<string, unknown>; children?: unknown[] }
+type Drawn = { type?: string; props?: Record<string, unknown>; hover?: Record<string, unknown>; children?: unknown[] }
 
 const VIEWPORT = { columns: 120, rows: 40 }
 
@@ -51,7 +51,7 @@ async function partsOf(ui: { drawn: () => Promise<unknown> }): Promise<string[]>
 
 // MARK: Replies it leaves alone
 
-test('leaves a reply with no code block to Claude Code', async ($, on) => {
+test('leaves a reply with no code block, quote or table to Claude Code', async ($, on) => {
   const engine = drawEngineReplies(on)
   const ui = await mountReply($, 'Just a sentence with `inline code`.')
   expect(await ui.drawn()).toMatchObject({ type: 'Text', children: ['engine:Just a sentence with `inline code`.'] })
@@ -366,6 +366,165 @@ test('says so when the clipboard does not take the code', async ($, on) => {
   const ui = await mountReply($, '```sh\nls\n```')
   await ui.press({ key: 'copy-0' })
   expect(seen.toasts).toEqual(['Not copied'])
+  expect(await buttonsOf(ui)).toEqual(['copy'])
+})
+
+// MARK: Quotes and tables
+
+// The Box in the columns left of the reply that holds a block's copy icon, in the order of the blocks.
+async function guttersOf(ui: { drawn: () => Promise<unknown> }): Promise<Drawn[]> {
+  return elementsOf(await ui.drawn(), element => element.type === 'Box' && element.props?.position === 'absolute')
+}
+
+// The shaded head rows of code blocks, which a quote or a table does not have.
+const headsOf = async (ui: { drawn: () => Promise<unknown> }) =>
+  elementsOf(await ui.drawn(), element => element.props?.backgroundColor === 'composerSidebarBackground')
+
+// The label of each Button, with the color it is drawn in and the color the pointer lights it in.
+async function labelsOf(ui: { drawn: () => Promise<unknown> }): Promise<unknown[][]> {
+  return elementsOf(await ui.drawn(), element => element.type === 'Button').map(button => {
+    const label = button.children?.[0] as Drawn
+    return [textOf(label), label.props?.color, label.hover?.color]
+  })
+}
+
+test('draws a quote as Claude Code does, with a dim copy icon in the column of the bullet', async ($, on) => {
+  drawEngineReplies(on)
+  const quote = '> First line\n> second line'
+  const ui = await mountReply($, `They said:\n\n${quote}\n\nThe end.`)
+  expect(await partsOf(ui)).toEqual(['Markdown:They said:', `Markdown:${quote}`, 'Markdown:The end.'])
+  expect(await headsOf(ui)).toEqual([])
+  const [gutter] = await guttersOf(ui)
+  expect(gutter?.props).toMatchObject({ position: 'absolute', top: 0, left: -2 })
+  expect(await labelsOf(ui)).toEqual([['⧉ ', 'inactive', 'suggestion']])
+})
+
+test('sets the copy icon a row down when the block opens the reply, below its bullet', async ($, on) => {
+  drawEngineReplies(on)
+  const [opening] = await guttersOf(await mountReply($, '> quoted\n> more', { isFirstOfReply: true }))
+  expect(opening?.props?.top).toBe(1)
+  const [later] = await guttersOf(await mountReply($, '> quoted\n> more', { isFirstOfReply: false }))
+  expect(later?.props?.top).toBe(0)
+})
+
+test('copies the words of a quote without its markers', async ($, on) => {
+  drawEngineReplies(on)
+  const seen = takeCopies(on)
+  const ui = await mountReply($, '> First line\n> second line\n>\n> > nested')
+  await ui.press({ key: 'copy-0' })
+  expect(seen.copied).toEqual(['First line\nsecond line\n\n> nested'])
+})
+
+test('shows a check where the icon was while it says the copy took', async ($, on) => {
+  drawEngineReplies(on)
+  const clock = mock.clock(on)
+  takeCopies(on)
+  const ui = await mountReply($, '> quoted')
+  await ui.press({ key: 'copy-0' })
+  expect(await labelsOf(ui)).toEqual([['✓ ', 'success', undefined]])
+
+  await clock.advance(1600)
+  expect(await labelsOf(ui)).toEqual([['⧉ ', 'inactive', 'suggestion']])
+})
+
+const TABLE = '| Name | Note |\n|:-----|-----:|\n| `a\\|b` \\| c | say "hi", **twice** |\n| [docs](https://example.com) | ~~old~~ |'
+
+test('draws a table as Claude Code does, with the copy icon and a button for each form under it', async ($, on) => {
+  drawEngineReplies(on)
+  const ui = await mountReply($, `Notes:\n\n${TABLE}\n\nDone.`)
+  expect(await partsOf(ui)).toEqual(['Markdown:Notes:', `Markdown:${TABLE}`, 'Markdown:Done.'])
+  expect(await headsOf(ui)).toEqual([])
+  expect(await labelsOf(ui)).toEqual([
+    ['⧉ ', 'inactive', 'suggestion'],
+    ['⧉ markdown', 'inactive', 'suggestion'],
+    ['⧉ tsv', 'inactive', 'suggestion'],
+    ['⧉ csv', 'inactive', 'suggestion'],
+  ])
+})
+
+test('copies a table as written from its icon and its markdown button', async ($, on) => {
+  drawEngineReplies(on)
+  const seen = takeCopies(on)
+  const ui = await mountReply($, TABLE)
+  await ui.press({ key: 'copy-0' })
+  await ui.press({ key: 'copy-0-markdown' })
+  expect(seen.copied).toEqual([TABLE, TABLE])
+})
+
+test('copies a table as tab-separated cells, with the marks of bold, struck text and links taken off', async ($, on) => {
+  drawEngineReplies(on)
+  const seen = takeCopies(on)
+  const ui = await mountReply($, TABLE)
+  await ui.press({ key: 'copy-0-tsv' })
+  expect(seen.copied).toEqual(['Name\tNote\na|b | c\tsay "hi", twice\ndocs\told'])
+})
+
+test('copies a table as comma-separated cells, quoting a cell that holds a comma or a quote', async ($, on) => {
+  drawEngineReplies(on)
+  const seen = takeCopies(on)
+  const ui = await mountReply($, TABLE)
+  await ui.press({ key: 'copy-0-csv' })
+  expect(seen.copied).toEqual(['Name,Note\na|b | c,"say ""hi"", twice"\ndocs,old'])
+})
+
+test('marks only the form of a table that was copied', async ($, on) => {
+  drawEngineReplies(on)
+  mock.clock(on)
+  takeCopies(on)
+  const ui = await mountReply($, TABLE)
+  await ui.press({ key: 'copy-0-tsv' })
+  expect((await labelsOf(ui)).map(([label]) => label)).toEqual(['⧉ ', '⧉ markdown', '✓ tsv', '⧉ csv'])
+})
+
+test('reads a table whose rows have no outer pipes', async ($, on) => {
+  drawEngineReplies(on)
+  const table = 'a | b\n--- | ---\n1 | 2'
+  expect(await partsOf(await mountReply($, table))).toEqual([`Markdown:${table}`])
+})
+
+test('tells the buttons of code, quotes and tables apart by their place in the reply', async ($, on) => {
+  drawEngineReplies(on)
+  const seen = takeCopies(on)
+  const ui = await mountReply($, '> quoted\n\n```sh\nls\n```\n\n| a |\n| - |\n| 1 |')
+  expect(await buttonsOf(ui)).toEqual(['⧉ ', 'copy', '⧉ ', '⧉ markdown', '⧉ tsv', '⧉ csv'])
+
+  await ui.press({ key: 'copy-2' })
+  await ui.press({ key: 'copy-0' })
+  expect(seen.copied).toEqual(['| a |\n| - |\n| 1 |', 'quoted'])
+})
+
+test('ends a quote at its first line with no marker', async ($, on) => {
+  drawEngineReplies(on)
+  expect(await partsOf(await mountReply($, '> one\n> two\nafter'))).toEqual(['Markdown:> one\n> two', 'Markdown:after'])
+})
+
+test('ends a table at its first blank line', async ($, on) => {
+  drawEngineReplies(on)
+  const ui = await mountReply($, '| a | b |\n| - | - |\n| 1 | 2 |\n\nNot a row | either')
+  expect(await partsOf(ui)).toEqual(['Markdown:| a | b |\n| - | - |\n| 1 | 2 |', 'Markdown:Not a row | either'])
+})
+
+test('reads a header with no row of columns under it as prose, as while a table streams', async ($, on) => {
+  drawEngineReplies(on)
+  expect(await (await mountReply($, 'Sizes:\n\n| a | b |')).drawn()).toMatchObject({ type: 'Text', children: ['engine:Sizes:\n\n| a | b |'] })
+})
+
+test('reads a table whose header and row of columns differ in count as prose', async ($, on) => {
+  drawEngineReplies(on)
+  const reply = '| a | b |\n| --- |\n| 1 | 2 |'
+  expect(await (await mountReply($, reply)).drawn()).toMatchObject({ type: 'Text', children: [`engine:${reply}`] })
+})
+
+test('leaves a quote or a table indented under a list item to the markdown around it', async ($, on) => {
+  drawEngineReplies(on)
+  const reply = '1. Quoted:\n   > a quote\n2. Sizes:\n   | a |\n   | - |\n   | 1 |'
+  expect(await (await mountReply($, reply)).drawn()).toMatchObject({ type: 'Text', children: [`engine:${reply}`] })
+})
+
+test('keeps a quote or a table inside a fenced block as code', async ($, on) => {
+  drawEngineReplies(on)
+  const ui = await mountReply($, '```md\n> quoted\n\n| a |\n| - |\n```')
+  expect(await partsOf(ui)).toEqual(['Code:> quoted\n\n| a |\n| - |'])
   expect(await buttonsOf(ui)).toEqual(['copy'])
 })
 
